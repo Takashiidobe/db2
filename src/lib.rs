@@ -4,3 +4,4 @@ pub mod storage;
 pub mod table;
 pub mod sql;
 pub mod index;
+pub mod optimizer;

@@ -78,6 +78,22 @@ impl InsertStmt {
     }
 }
 
+/// Column reference, optionally qualified with table name
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ColumnRef {
+    pub table: Option<String>,
+    pub column: String,
+}
+
+impl ColumnRef {
+    pub fn new(table: Option<String>, column: impl Into<String>) -> Self {
+        Self {
+            table,
+            column: column.into(),
+        }
+    }
+}
+
 /// Binary operator
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum BinaryOp {
@@ -93,7 +109,7 @@ pub enum BinaryOp {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Expr {
     /// Column reference (e.g., "id", "name")
-    Column(String),
+    Column(ColumnRef),
     /// Literal value
     Literal(Literal),
     /// Binary operation (e.g., col = 5)
@@ -121,26 +137,38 @@ pub enum SelectColumn {
     /// All columns (*)
     All,
     /// Specific columns
-    Columns(Vec<String>),
+    Columns(Vec<ColumnRef>),
+}
+
+/// FROM clause source
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum FromClause {
+    Table(String),
+    Join {
+        left_table: String,
+        right_table: String,
+        left_column: ColumnRef,
+        right_column: ColumnRef,
+    },
 }
 
 /// SELECT statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectStmt {
     pub columns: SelectColumn,
-    pub table_name: String,
+    pub from: FromClause,
     pub where_clause: Option<Expr>,
 }
 
 impl SelectStmt {
     pub fn new(
         columns: SelectColumn,
-        table_name: impl Into<String>,
+        from: FromClause,
         where_clause: Option<Expr>,
     ) -> Self {
         Self {
             columns,
-            table_name: table_name.into(),
+            from,
             where_clause,
         }
     }

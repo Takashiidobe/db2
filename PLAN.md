@@ -307,7 +307,7 @@ String:  [4 bytes: length][length bytes: UTF-8]
 
 ---
 
-### Step 13: JOIN Implementation
+### Step 13: JOIN Implementation ✅ COMPLETED
 **Goal:** Basic nested loop join
 
 **Tasks:**
@@ -326,7 +326,7 @@ String:  [4 bytes: length][length bytes: UTF-8]
 
 ---
 
-### Step 14: Query Optimizer
+### Step 14: Query Optimizer ✅ COMPLETED
 **Goal:** Cost-based query optimization
 
 **Tasks:**

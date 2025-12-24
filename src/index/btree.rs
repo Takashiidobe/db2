@@ -298,10 +298,27 @@ impl<K: Ord + Clone + Debug, V: Clone + Debug> BPlusTree<K, V> {
             node_id = internal.children[child_idx];
         }
 
+        let (current_leaf, current_index) = match &self.nodes[node_id] {
+            Node::Leaf(leaf) => {
+                let idx = match leaf.keys.binary_search(start) {
+                    Ok(pos) => pos,
+                    Err(pos) => pos,
+                };
+
+                if idx >= leaf.keys.len() {
+                    // Start key is greater than everything in this leaf: begin at next leaf
+                    (leaf.next, 0)
+                } else {
+                    (Some(node_id), idx)
+                }
+            }
+            _ => unreachable!(),
+        };
+
         RangeScanIterator {
             tree: self,
-            current_leaf: Some(node_id),
-            current_index: 0,
+            current_leaf,
+            current_index,
             end: end.clone(),
         }
     }

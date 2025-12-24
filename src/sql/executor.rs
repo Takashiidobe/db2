@@ -1,8 +1,12 @@
-use super::ast::{BinaryOp, CreateIndexStmt, CreateTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement};
+use super::ast::{
+    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt,
+    Statement,
+};
 use crate::index::BPlusTree;
+use crate::optimizer::planner::{FromClausePlan, JoinPlan, Planner, ScanPlan};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -269,55 +273,53 @@ impl Executor {
 
     /// Execute SELECT statement
     fn execute_select(&mut self, stmt: SelectStmt) -> io::Result<ExecutionResult> {
+        let planner = Planner::new(self.index_metadata());
+        let plan = planner.plan_select(&stmt);
+
+        match plan.from {
+            FromClausePlan::Single { table, scan } => {
+                self.execute_select_single_table_plan(plan.columns, table, plan.filter, scan)
+            }
+            FromClausePlan::Join(join_plan) => {
+                self.execute_select_join_plan(plan.columns, join_plan, plan.filter)
+            }
+        }
+    }
+
+    fn execute_select_single_table_plan(
+        &mut self,
+        columns: SelectColumn,
+        table_name: String,
+        where_clause: Option<Expr>,
+        scan_plan: ScanPlan,
+    ) -> io::Result<ExecutionResult> {
         // Get schema first (before any mutable borrows)
         let schema = {
-            let table = self.tables.get(&stmt.table_name).ok_or_else(|| {
+            let table = self.tables.get(&table_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Table '{}' does not exist", stmt.table_name),
+                    format!("Table '{}' does not exist", table_name),
                 )
             })?;
             table.schema().clone()
         };
 
-        // Determine which columns to select
-        let column_indices: Vec<usize> = match &stmt.columns {
-            SelectColumn::All => (0..schema.columns().len()).collect(),
-            SelectColumn::Columns(names) => {
-                names
-                    .iter()
-                    .map(|name| {
-                        schema.find_column(name)
-                            .map(|(idx, _)| idx)  // Extract just the index
-                            .ok_or_else(|| {
-                                io::Error::new(
-                                    io::ErrorKind::InvalidInput,
-                                    format!("Column '{}' not found", name),
-                                )
-                            })
-                    })
-                    .collect::<Result<Vec<_>, _>>()?
+        let columns_meta = Self::build_column_metadata_for_table(&table_name, &schema);
+        let (column_indices, column_names) =
+            Self::build_projection(&columns_meta, &columns, false)?;
+
+        let row_ids = match scan_plan {
+            ScanPlan::IndexScan { column, op, value } => {
+                self.index_scan(&table_name, &column, op, &value)?
             }
-        };
-
-        // Get column names for the result
-        let column_names: Vec<String> = column_indices
-            .iter()
-            .map(|&idx| schema.columns()[idx].name().to_string())
-            .collect();
-
-        // Check if we can use an index for the WHERE clause
-        let row_ids = if let Some(ref where_expr) = stmt.where_clause {
-            self.try_index_scan(&stmt.table_name, where_expr)?
-        } else {
-            None
+            ScanPlan::SeqScan => None,
         };
 
         // Get the table again for mutable access
-        let table = self.tables.get_mut(&stmt.table_name).ok_or_else(|| {
+        let table = self.tables.get_mut(&table_name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
-                format!("Table '{}' does not exist", stmt.table_name),
+                format!("Table '{}' does not exist", table_name),
             )
         })?;
 
@@ -327,6 +329,12 @@ impl Executor {
             // Index scan: fetch specific rows
             for row_id in row_ids {
                 let row = table.get(row_id)?;
+
+                if let Some(ref where_expr) = where_clause
+                    && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
+                {
+                    continue;
+                }
 
                 // Project selected columns
                 let projected_row: Vec<Value> = column_indices
@@ -342,10 +350,11 @@ impl Executor {
 
             while let Some((_row_id, row)) = scan.next()? {
                 // Apply WHERE clause filter if present
-                if let Some(ref where_expr) = stmt.where_clause
-                    && !Self::evaluate_predicate_static(where_expr, &row, &schema)? {
-                        continue;
-                    }
+                if let Some(ref where_expr) = where_clause
+                    && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
+                {
+                    continue;
+                }
 
                 // Project selected columns
                 let projected_row: Vec<Value> = column_indices
@@ -363,84 +372,206 @@ impl Executor {
         })
     }
 
-    /// Try to use an index for a WHERE clause
-    /// Returns Some(row_ids) if an index can be used, None otherwise
-    fn try_index_scan(
-        &self,
-        table_name: &str,
-        where_expr: &Expr,
-    ) -> io::Result<Option<Vec<RowId>>> {
-        // Only handle simple predicates: column <op> literal
-        if let Expr::BinaryOp { left, op, right } = where_expr {
-            // Check if left is column and right is literal (or vice versa)
-            let (column_name, literal_value, op) = match (left.as_ref(), right.as_ref()) {
-                (Expr::Column(col), Expr::Literal(lit)) => (col, lit, *op),
-                (Expr::Literal(lit), Expr::Column(col)) => {
-                    // Swap operator when operands are reversed
-                    let swapped_op = match op {
-                        BinaryOp::Lt => BinaryOp::Gt,
-                        BinaryOp::LtEq => BinaryOp::GtEq,
-                        BinaryOp::Gt => BinaryOp::Lt,
-                        BinaryOp::GtEq => BinaryOp::LtEq,
-                        other => *other,
-                    };
-                    (col, lit, swapped_op)
-                }
-                _ => return Ok(None),
-            };
+    #[allow(clippy::too_many_arguments)]
+    fn execute_select_join_plan(
+        &mut self,
+        columns: SelectColumn,
+        join_plan: JoinPlan,
+        where_clause: Option<Expr>,
+    ) -> io::Result<ExecutionResult> {
+        // Fetch schemas before mutable borrows
+        let left_schema = {
+            let table = self.tables.get(&join_plan.outer_table).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", join_plan.outer_table),
+                )
+            })?;
+            table.schema().clone()
+        };
+        let right_schema = {
+            let table = self.tables.get(&join_plan.inner_table).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", join_plan.inner_table),
+                )
+            })?;
+            table.schema().clone()
+        };
 
-            // Check if we have an index on this column
-            let index_key = (table_name.to_string(), column_name.clone());
-            if let Some(index) = self.indexes.get(&index_key) {
-                // Only support INTEGER indexes
-                if let Literal::Integer(key) = literal_value {
-                    let mut row_ids = Vec::new();
+        // Resolve join columns
+        let left_join_idx =
+            Self::resolve_schema_column_index(&left_schema, &join_plan.outer_table, &join_plan.outer_column)?;
+        let right_join_idx =
+            Self::resolve_schema_column_index(&right_schema, &join_plan.inner_table, &join_plan.inner_column)?;
 
-                    match op {
-                        BinaryOp::Eq => {
-                            // Exact match
-                            if let Some(&row_id) = index.search(key) {
-                                row_ids.push(row_id);
-                            }
-                        }
-                        BinaryOp::Lt => {
-                            // key < value: scan from MIN to value-1
-                            for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
-                                row_ids.push(v);
-                            }
-                        }
-                        BinaryOp::LtEq => {
-                            // key <= value: scan from MIN to value
-                            for (_k, v) in index.range_scan(&i64::MIN, key) {
-                                row_ids.push(v);
-                            }
-                        }
-                        BinaryOp::Gt => {
-                            // key > value: scan from value+1 to MAX
-                            for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
-                                row_ids.push(v);
-                            }
-                        }
-                        BinaryOp::GtEq => {
-                            // key >= value: scan from value to MAX
-                            for (_k, v) in index.range_scan(key, &i64::MAX) {
-                                row_ids.push(v);
-                            }
-                        }
-                        BinaryOp::NotEq => {
-                            // For !=, it's usually better to use table scan
-                            // But we can implement it as: < OR >
-                            for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
-                                row_ids.push(v);
-                            }
-                            for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
-                                row_ids.push(v);
-                            }
+        let combined_meta = Self::build_join_column_metadata(
+            &join_plan.outer_table,
+            &left_schema,
+            &join_plan.inner_table,
+            &right_schema,
+        );
+        let (column_indices, column_names) =
+            Self::build_projection(&combined_meta, &columns, true)?;
+
+        // Preload left rows (outer loop)
+        let left_rows = {
+            let mut rows = Vec::new();
+            let left_table_ref = self.tables.get_mut(&join_plan.outer_table).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", join_plan.outer_table),
+                )
+            })?;
+            let mut scan = TableScan::new(left_table_ref);
+            while let Some((_row_id, row)) = scan.next()? {
+                rows.push(row);
+            }
+            rows
+        };
+
+        let index_key = (
+            join_plan.inner_table.clone(),
+            right_schema.columns()[right_join_idx].name().to_string(),
+        );
+        let right_join_is_integer =
+            right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
+        let use_right_index = join_plan.inner_has_index && right_join_is_integer && self.indexes.contains_key(&index_key);
+
+        // If not using index, load right rows once
+        let right_rows_cache: Option<Vec<Vec<Value>>> = if use_right_index {
+            None
+        } else {
+            let mut rows = Vec::new();
+            let right_table_ref = self.tables.get_mut(&join_plan.inner_table).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", join_plan.inner_table),
+                )
+            })?;
+            let mut scan = TableScan::new(right_table_ref);
+            while let Some((_row_id, row)) = scan.next()? {
+                rows.push(row);
+            }
+            Some(rows)
+        };
+
+        let mut result_rows = Vec::new();
+
+        for left_row in left_rows {
+            let left_key = left_row[left_join_idx].clone();
+            let mut matching_right_rows = Vec::new();
+
+            if use_right_index {
+                if let Value::Integer(key) = left_key {
+                    // Look up matching row IDs via index first
+                    let mut matched_ids = Vec::new();
+                    if let Some(index) = self.indexes.get(&index_key) {
+                        if let Some(&row_id) = index.search(&key) {
+                            matched_ids.push(row_id);
                         }
                     }
 
-                    return Ok(Some(row_ids));
+                    for row_id in matched_ids {
+                        let right_row = {
+                            let right_table_ref =
+                                self.tables.get_mut(&join_plan.inner_table).ok_or_else(|| {
+                                    io::Error::new(
+                                        io::ErrorKind::NotFound,
+                                        format!("Table '{}' does not exist", join_plan.inner_table),
+                                    )
+                                })?;
+                            right_table_ref.get(row_id)?
+                        };
+                        matching_right_rows.push(right_row);
+                    }
                 }
+            } else if let Some(ref right_rows) = right_rows_cache {
+                for right_row in right_rows {
+                    if right_row[right_join_idx] == left_key {
+                        matching_right_rows.push(right_row.clone());
+                    }
+                }
+            }
+
+            for right_row in matching_right_rows {
+                let mut combined_row = Vec::new();
+                combined_row.extend(left_row.clone());
+                combined_row.extend(right_row);
+
+                if let Some(ref where_expr) = where_clause
+                    && !Self::evaluate_predicate_static(where_expr, &combined_row, &combined_meta)?
+                {
+                    continue;
+                }
+
+                let projected_row: Vec<Value> = column_indices
+                    .iter()
+                    .map(|&idx| combined_row[idx].clone())
+                    .collect();
+
+                result_rows.push(projected_row);
+            }
+        }
+
+        Ok(ExecutionResult::Select {
+            column_names,
+            rows: result_rows,
+        })
+    }
+
+
+    /// Use an index for a simple predicate if available.
+    /// Returns Some(row_ids) if an index can be used, None otherwise.
+    fn index_scan(
+        &self,
+        table_name: &str,
+        column_name: &str,
+        op: BinaryOp,
+        literal_value: &Literal,
+    ) -> io::Result<Option<Vec<RowId>>> {
+        let index_key = (table_name.to_string(), column_name.to_string());
+        if let Some(index) = self.indexes.get(&index_key) {
+            if let Literal::Integer(key) = literal_value {
+                let mut row_ids = Vec::new();
+
+                match op {
+                    BinaryOp::Eq => {
+                        if let Some(&row_id) = index.search(key) {
+                            row_ids.push(row_id);
+                        }
+                    }
+                    BinaryOp::Lt => {
+                        for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
+                            row_ids.push(v);
+                        }
+                    }
+                    BinaryOp::LtEq => {
+                        for (_k, v) in index.range_scan(&i64::MIN, key) {
+                            row_ids.push(v);
+                        }
+                    }
+                    BinaryOp::Gt => {
+                        for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
+                            row_ids.push(v);
+                        }
+                    }
+                    BinaryOp::GtEq => {
+                        for (_k, v) in index.range_scan(key, &i64::MAX) {
+                            row_ids.push(v);
+                        }
+                    }
+                    BinaryOp::NotEq => {
+                        for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
+                            row_ids.push(v);
+                        }
+                        for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
+                            row_ids.push(v);
+                        }
+                    }
+                }
+
+                return Ok(Some(row_ids));
             }
         }
 
@@ -451,12 +582,12 @@ impl Executor {
     fn evaluate_predicate_static(
         expr: &Expr,
         row: &[Value],
-        schema: &Schema,
+        columns: &[(Option<String>, String)],
     ) -> io::Result<bool> {
         match expr {
             Expr::BinaryOp { left, op, right } => {
-                let left_val = Self::evaluate_expr_static(left, row, schema)?;
-                let right_val = Self::evaluate_expr_static(right, row, schema)?;
+                let left_val = Self::evaluate_expr_static(left, row, columns)?;
+                let right_val = Self::evaluate_expr_static(right, row, columns)?;
 
                 let result = match op {
                     BinaryOp::Eq => left_val == right_val,
@@ -477,17 +608,13 @@ impl Executor {
     }
 
     /// Evaluate an expression to a value (static version)
-    fn evaluate_expr_static(expr: &Expr, row: &[Value], schema: &Schema) -> io::Result<Value> {
+    fn evaluate_expr_static(
+        expr: &Expr,
+        row: &[Value],
+        columns: &[(Option<String>, String)],
+    ) -> io::Result<Value> {
         match expr {
-            Expr::Column(name) => {
-                let (idx, _) = schema.find_column(name).ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!("Column '{}' not found", name),
-                    )
-                })?;
-                Ok(row[idx].clone())
-            }
+            Expr::Column(col_ref) => Self::resolve_column_value(row, columns, col_ref),
             Expr::Literal(lit) => {
                 let val = match lit {
                     Literal::Integer(i) => Value::Integer(*i),
@@ -505,6 +632,131 @@ impl Executor {
     /// Get a table by name
     pub fn get_table(&mut self, name: &str) -> Option<&mut HeapTable> {
         self.tables.get_mut(name)
+    }
+
+    fn index_metadata(&self) -> HashSet<(String, String)> {
+        self.indexes
+            .keys()
+            .cloned()
+            .collect()
+    }
+
+    fn build_column_metadata_for_table(table_name: &str, schema: &Schema) -> Vec<(Option<String>, String)> {
+        schema
+            .columns()
+            .iter()
+            .map(|col| (Some(table_name.to_string()), col.name().to_string()))
+            .collect()
+    }
+
+    fn build_join_column_metadata(
+        left_table: &str,
+        left_schema: &Schema,
+        right_table: &str,
+        right_schema: &Schema,
+    ) -> Vec<(Option<String>, String)> {
+        let mut columns = Self::build_column_metadata_for_table(left_table, left_schema);
+        columns.extend(Self::build_column_metadata_for_table(right_table, right_schema));
+        columns
+    }
+
+    fn format_column_name(meta: &(Option<String>, String), use_qualified: bool) -> String {
+        match (&meta.0, use_qualified) {
+            (Some(table), true) => format!("{}.{}", table, meta.1),
+            _ => meta.1.clone(),
+        }
+    }
+
+    fn build_projection(
+        columns_meta: &[(Option<String>, String)],
+        selection: &SelectColumn,
+        use_qualified: bool,
+    ) -> io::Result<(Vec<usize>, Vec<String>)> {
+        match selection {
+            SelectColumn::All => {
+                let indices: Vec<usize> = (0..columns_meta.len()).collect();
+                let names: Vec<String> = columns_meta
+                    .iter()
+                    .map(|meta| Self::format_column_name(meta, use_qualified))
+                    .collect();
+                Ok((indices, names))
+            }
+            SelectColumn::Columns(cols) => {
+                let mut indices = Vec::new();
+                let mut names = Vec::new();
+                for col_ref in cols {
+                    let idx = Self::resolve_column_index(columns_meta, col_ref)?;
+                    indices.push(idx);
+                    names.push(Self::format_column_name(
+                        &columns_meta[idx],
+                        use_qualified,
+                    ));
+                }
+                Ok((indices, names))
+            }
+        }
+    }
+
+    fn resolve_column_index(
+        columns_meta: &[(Option<String>, String)],
+        col_ref: &ColumnRef,
+    ) -> io::Result<usize> {
+        let mut matches = columns_meta
+            .iter()
+            .enumerate()
+            .filter(|(_, (table, name))| match &col_ref.table {
+                Some(t) => table.as_deref() == Some(t) && name == &col_ref.column,
+                None => name == &col_ref.column,
+            });
+
+        let first = matches.next();
+        let second = matches.next();
+
+        match (first, second) {
+            (Some((idx, _)), None) => Ok(idx),
+            (None, _) => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Column '{}' not found", col_ref.column),
+            )),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Column reference '{}' is ambiguous", col_ref.column),
+            )),
+        }
+    }
+
+    fn resolve_column_value(
+        row: &[Value],
+        columns_meta: &[(Option<String>, String)],
+        col_ref: &ColumnRef,
+    ) -> io::Result<Value> {
+        let idx = Self::resolve_column_index(columns_meta, col_ref)?;
+        Ok(row[idx].clone())
+    }
+
+    fn resolve_schema_column_index(
+        schema: &Schema,
+        table_name: &str,
+        col_ref: &ColumnRef,
+    ) -> io::Result<usize> {
+        if let Some(ref table) = col_ref.table {
+            if table != table_name {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' does not belong to table '{}'", col_ref.column, table_name),
+                ));
+            }
+        }
+
+        schema
+            .find_column(&col_ref.column)
+            .map(|(idx, _)| idx)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", col_ref.column, table_name),
+                )
+            })
     }
 
     /// Flush all tables
@@ -997,5 +1249,74 @@ mod tests {
         // Try to create same index again (should fail)
         let result = executor.execute(parse_sql("CREATE INDEX idx_id2 ON users(id)").unwrap());
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_join_nested_loop() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
+        executor.execute(parse_sql("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)").unwrap()).unwrap();
+
+        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
+
+        executor.execute(parse_sql("INSERT INTO orders VALUES (100, 1, 50)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO orders VALUES (101, 2, 20)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql(
+            "SELECT * FROM users JOIN orders ON users.id = orders.user_id",
+        ).unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { column_names, rows } => {
+                assert_eq!(
+                    column_names,
+                    vec![
+                        "users.id".to_string(),
+                        "users.name".to_string(),
+                        "orders.id".to_string(),
+                        "orders.user_id".to_string(),
+                        "orders.amount".to_string(),
+                    ]
+                );
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().any(|r| r[0] == Value::Integer(1) && r[2] == Value::Integer(100)));
+                assert!(rows.iter().any(|r| r[0] == Value::Integer(2) && r[2] == Value::Integer(101)));
+            }
+            _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_join_with_index_on_inner() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
+        executor.execute(parse_sql("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)").unwrap()).unwrap();
+
+        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
+
+        executor.execute(parse_sql("INSERT INTO orders VALUES (100, 1, 50)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO orders VALUES (101, 2, 20)").unwrap()).unwrap();
+
+        executor.execute(parse_sql("CREATE INDEX idx_orders_user_id ON orders(user_id)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql(
+            "SELECT orders.amount, users.name FROM users JOIN orders ON users.id = orders.user_id",
+        ).unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { column_names, rows } => {
+                assert_eq!(column_names, vec!["orders.amount".to_string(), "users.name".to_string()]);
+                assert_eq!(rows.len(), 2);
+                assert!(rows.iter().any(|r| r[0] == Value::Integer(50) && r[1] == Value::String("Alice".to_string())));
+                assert!(rows.iter().any(|r| r[0] == Value::Integer(20) && r[1] == Value::String("Bob".to_string())));
+            }
+            _ => panic!("Expected Select result"),
+        }
     }
 }

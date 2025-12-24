@@ -1,4 +1,7 @@
-use super::ast::{BinaryOp, ColumnDef, CreateIndexStmt, CreateTableStmt, DataType, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement};
+use super::ast::{
+    BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, Expr, FromClause, InsertStmt,
+    Literal, SelectColumn, SelectStmt, Statement,
+};
 
 /// Parse errors
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -38,6 +41,8 @@ enum Token {
     Where,
     Index,
     On,
+    Join,
+    Dot,
 
     // Symbols
     LeftParen,
@@ -75,6 +80,8 @@ impl std::fmt::Display for Token {
             Token::Where => write!(f, "WHERE"),
             Token::Index => write!(f, "INDEX"),
             Token::On => write!(f, "ON"),
+            Token::Join => write!(f, "JOIN"),
+            Token::Dot => write!(f, "."),
             Token::LeftParen => write!(f, "("),
             Token::RightParen => write!(f, ")"),
             Token::Comma => write!(f, ","),
@@ -209,6 +216,10 @@ impl Tokenizer {
                 self.advance();
                 Ok(Token::Comma)
             }
+            Some('.') => {
+                self.advance();
+                Ok(Token::Dot)
+            }
             Some('*') => {
                 self.advance();
                 Ok(Token::Asterisk)
@@ -267,6 +278,7 @@ impl Tokenizer {
                     "WHERE" => Token::Where,
                     "INDEX" => Token::Index,
                     "ON" => Token::On,
+                    "JOIN" => Token::Join,
                     _ => Token::Identifier(ident),
                 };
                 Ok(token)
@@ -530,9 +542,9 @@ impl Parser {
     fn parse_primary_expr(&mut self) -> Result<Expr, ParseError> {
         let token = self.current().clone();
         match token {
-            Token::Identifier(name) => {
-                self.advance();
-                Ok(Expr::Column(name))
+            Token::Identifier(_) => {
+                let col_ref = self.parse_column_ref()?;
+                Ok(Expr::Column(col_ref))
             }
             Token::IntegerLiteral(i) => {
                 self.advance();
@@ -564,6 +576,43 @@ impl Parser {
         }
     }
 
+    fn parse_column_ref(&mut self) -> Result<ColumnRef, ParseError> {
+        let base_name = match self.current() {
+            Token::Identifier(name) => {
+                let name = name.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "column name".to_string(),
+                    found: format!("{}", self.current()),
+                })
+            }
+        };
+
+        if matches!(self.current(), Token::Dot) {
+            self.advance();
+            let column_name = match self.current() {
+                Token::Identifier(name) => {
+                    let name = name.clone();
+                    self.advance();
+                    name
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "column name".to_string(),
+                        found: format!("{}", self.current()),
+                    })
+                }
+            };
+
+            Ok(ColumnRef::new(Some(base_name), column_name))
+        } else {
+            Ok(ColumnRef::new(None, base_name))
+        }
+    }
+
     fn parse_select(&mut self) -> Result<SelectStmt, ParseError> {
         self.expect(Token::Select)?;
 
@@ -574,18 +623,7 @@ impl Parser {
         } else {
             let mut column_names = Vec::new();
             loop {
-                match self.current() {
-                    Token::Identifier(name) => {
-                        column_names.push(name.clone());
-                        self.advance();
-                    }
-                    _ => {
-                        return Err(ParseError::UnexpectedToken {
-                            expected: "column name or *".to_string(),
-                            found: format!("{}", self.current()),
-                        })
-                    }
-                }
+                column_names.push(self.parse_column_ref()?);
 
                 if matches!(self.current(), Token::Comma) {
                     self.advance();
@@ -598,7 +636,7 @@ impl Parser {
 
         self.expect(Token::From)?;
 
-        let table_name = match self.current() {
+        let left_table = match self.current() {
             Token::Identifier(s) => {
                 let name = s.clone();
                 self.advance();
@@ -612,6 +650,43 @@ impl Parser {
             }
         };
 
+        let mut from = FromClause::Table(left_table.clone());
+
+        if matches!(self.current(), Token::Join) {
+            self.advance();
+
+            let right_table = match self.current() {
+                Token::Identifier(s) => {
+                    let name = s.clone();
+                    self.advance();
+                    name
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "table name".to_string(),
+                        found: format!("{}", self.current()),
+                    })
+                }
+            };
+
+            self.expect(Token::On)?;
+            let left_column = self.parse_column_ref()?;
+            let op = self.parse_binary_op()?;
+            if op != BinaryOp::Eq {
+                return Err(ParseError::InvalidSyntax(
+                    "JOIN only supports equality conditions".to_string(),
+                ));
+            }
+            let right_column = self.parse_column_ref()?;
+
+            from = FromClause::Join {
+                left_table,
+                right_table,
+                left_column,
+                right_column,
+            };
+        }
+
         // Parse optional WHERE clause
         let where_clause = if matches!(self.current(), Token::Where) {
             self.advance();
@@ -620,7 +695,7 @@ impl Parser {
             None
         };
 
-        Ok(SelectStmt::new(columns, table_name, where_clause))
+        Ok(SelectStmt::new(columns, from, where_clause))
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
@@ -803,6 +878,39 @@ mod tests {
                 assert_eq!(create.columns.len(), 2);
             }
             _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_join() {
+        let sql = "SELECT users.id, orders.amount FROM users JOIN orders ON users.id = orders.user_id WHERE orders.amount > 10";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                if let SelectColumn::Columns(cols) = select.columns {
+                    assert_eq!(cols.len(), 2);
+                    assert_eq!(cols[0].table.as_deref(), Some("users"));
+                    assert_eq!(cols[0].column, "id");
+                    assert_eq!(cols[1].table.as_deref(), Some("orders"));
+                    assert_eq!(cols[1].column, "amount");
+                } else {
+                    panic!("Expected column list");
+                }
+
+                match select.from {
+                    FromClause::Join { left_table, right_table, left_column, right_column } => {
+                        assert_eq!(left_table, "users");
+                        assert_eq!(right_table, "orders");
+                        assert_eq!(left_column.table.as_deref(), Some("users"));
+                        assert_eq!(left_column.column, "id");
+                        assert_eq!(right_column.table.as_deref(), Some("orders"));
+                        assert_eq!(right_column.column, "user_id");
+                    }
+                    _ => panic!("Expected JOIN in FROM"),
+                }
+            }
+            _ => panic!("Expected Select statement"),
         }
     }
 }

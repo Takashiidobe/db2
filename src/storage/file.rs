@@ -20,7 +20,6 @@ impl DiskManager {
             .read(true)
             .write(true)
             .create(true)
-            .truncate(true)
             .open(path)?;
 
         Ok(Self { file })
