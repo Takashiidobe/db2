@@ -27,6 +27,15 @@ fn main() -> io::Result<()> {
             println!("  - {}: {}", name, cols.join(", "));
         }
     }
+    let indexes = executor.list_indexes();
+    if indexes.is_empty() {
+        println!("Indexes: (none loaded)");
+    } else {
+        println!("Indexes:");
+        for (name, table, cols) in indexes {
+            println!("  - {} on {}({})", name, table, cols.join(", "));
+        }
+    }
     println!();
 
     loop {

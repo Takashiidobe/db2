@@ -45,6 +45,7 @@ enum Token {
     Index,
     On,
     Join,
+    And,
     Dot,
 
     // Symbols
@@ -85,6 +86,7 @@ impl std::fmt::Display for Token {
             Token::Index => write!(f, "INDEX"),
             Token::On => write!(f, "ON"),
             Token::Join => write!(f, "JOIN"),
+            Token::And => write!(f, "AND"),
             Token::Dot => write!(f, "."),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
@@ -286,6 +288,7 @@ impl Tokenizer {
                     "INDEX" => Token::Index,
                     "ON" => Token::On,
                     "JOIN" => Token::Join,
+                    "AND" => Token::And,
                     "TRUE" => Token::True,
                     "FALSE" => Token::False,
                     _ => Token::Identifier(ident),
@@ -458,23 +461,32 @@ impl Parser {
 
         self.expect(Token::LeftParen)?;
 
-        let column_name = match self.current() {
-            Token::Identifier(s) => {
-                let name = s.clone();
-                self.advance();
-                name
+        let mut columns = Vec::new();
+        loop {
+            let column_name = match self.current() {
+                Token::Identifier(s) => {
+                    let name = s.clone();
+                    self.advance();
+                    name
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "column name".to_string(),
+                        found: format!("{}", self.current()),
+                    })
+                }
+            };
+            columns.push(column_name);
+
+            match self.current() {
+                Token::Comma => self.advance(),
+                _ => break,
             }
-            _ => {
-                return Err(ParseError::UnexpectedToken {
-                    expected: "column name".to_string(),
-                    found: format!("{}", self.current()),
-                })
-            }
-        };
+        }
 
         self.expect(Token::RightParen)?;
 
-        Ok(CreateIndexStmt::new(index_name, table_name, column_name))
+        Ok(CreateIndexStmt::new(index_name, table_name, columns))
     }
 
     fn parse_literal(&mut self) -> Result<Literal, ParseError> {
@@ -522,11 +534,23 @@ impl Parser {
         };
 
         self.expect(Token::Values)?;
-        self.expect(Token::LeftParen)?;
-
-        let mut values = Vec::new();
+        let mut rows = Vec::new();
         loop {
-            values.push(self.parse_literal()?);
+            self.expect(Token::LeftParen)?;
+
+            let mut values = Vec::new();
+            loop {
+                values.push(self.parse_literal()?);
+
+                if matches!(self.current(), Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+
+            self.expect(Token::RightParen)?;
+            rows.push(values);
 
             if matches!(self.current(), Token::Comma) {
                 self.advance();
@@ -535,9 +559,7 @@ impl Parser {
             }
         }
 
-        self.expect(Token::RightParen)?;
-
-        Ok(InsertStmt::new(table_name, values))
+        Ok(InsertStmt::new(table_name, rows))
     }
 
     fn parse_binary_op(&mut self) -> Result<BinaryOp, ParseError> {
@@ -591,6 +613,18 @@ impl Parser {
     }
 
     fn parse_expression(&mut self) -> Result<Expr, ParseError> {
+        let mut expr = self.parse_comparison_expr()?;
+
+        while matches!(self.current(), Token::And) {
+            self.advance();
+            let right = self.parse_comparison_expr()?;
+            expr = Expr::binary_op(expr, BinaryOp::And, right);
+        }
+
+        Ok(expr)
+    }
+
+    fn parse_comparison_expr(&mut self) -> Result<Expr, ParseError> {
         let left = self.parse_primary_expr()?;
 
         // Check if there's a binary operator
@@ -832,10 +866,11 @@ mod tests {
         match stmt {
             Statement::Insert(insert) => {
                 assert_eq!(insert.table_name, "users");
-                assert_eq!(insert.values.len(), 3);
-                assert_eq!(insert.values[0], Literal::Integer(1));
-                assert_eq!(insert.values[1], Literal::Boolean(true));
-                assert_eq!(insert.values[2], Literal::String("Alice".to_string()));
+                assert_eq!(insert.values.len(), 1);
+                assert_eq!(insert.values[0].len(), 3);
+                assert_eq!(insert.values[0][0], Literal::Integer(1));
+                assert_eq!(insert.values[0][1], Literal::Boolean(true));
+                assert_eq!(insert.values[0][2], Literal::String("Alice".to_string()));
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -848,11 +883,11 @@ mod tests {
 
         match stmt {
             Statement::Insert(insert) => {
-                assert_eq!(insert.values.len(), 4);
-                assert_eq!(insert.values[0], Literal::Integer(42));
-                assert_eq!(insert.values[1], Literal::String("hello".to_string()));
-                assert_eq!(insert.values[2], Literal::Integer(-100));
-                assert_eq!(insert.values[3], Literal::String("world".to_string()));
+                assert_eq!(insert.values.len(), 1);
+                assert_eq!(insert.values[0][0], Literal::Integer(42));
+                assert_eq!(insert.values[0][1], Literal::String("hello".to_string()));
+                assert_eq!(insert.values[0][2], Literal::Integer(-100));
+                assert_eq!(insert.values[0][3], Literal::String("world".to_string()));
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -865,7 +900,7 @@ mod tests {
 
         match stmt {
             Statement::Insert(insert) => {
-                assert_eq!(insert.values[0], Literal::String("it's working".to_string()));
+                assert_eq!(insert.values[0][0], Literal::String("it's working".to_string()));
             }
             _ => panic!("Expected Insert statement"),
         }

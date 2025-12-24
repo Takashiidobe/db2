@@ -3,10 +3,10 @@ use super::ast::{
     Statement,
 };
 use crate::index::BPlusTree;
-use crate::optimizer::planner::{FromClausePlan, JoinPlan, Planner, ScanPlan};
+use crate::optimizer::planner::{FromClausePlan, IndexMetadata, JoinPlan, Planner, ScanPlan};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -17,7 +17,7 @@ pub enum ExecutionResult {
     /// Table created successfully
     CreateTable { table_name: String },
     /// Row inserted successfully
-    Insert { row_id: RowId },
+    Insert { row_ids: Vec<RowId> },
     /// SELECT query result
     Select {
         column_names: Vec<String>,
@@ -28,7 +28,7 @@ pub enum ExecutionResult {
     CreateIndex {
         index_name: String,
         table_name: String,
-        column_name: String,
+        columns: Vec<String>,
     },
 }
 
@@ -38,13 +38,18 @@ impl std::fmt::Display for ExecutionResult {
             ExecutionResult::CreateTable { table_name } => {
                 write!(f, "Table '{}' created successfully", table_name)
             }
-            ExecutionResult::Insert { row_id } => {
-                write!(
-                    f,
-                    "Row inserted (page: {}, slot: {})",
-                    row_id.page_id(),
-                    row_id.slot_id()
-                )
+            ExecutionResult::Insert { row_ids } => {
+                if row_ids.len() == 1 {
+                    let row_id = row_ids[0];
+                    write!(
+                        f,
+                        "Row inserted (page: {}, slot: {})",
+                        row_id.page_id(),
+                        row_id.slot_id()
+                    )
+                } else {
+                    write!(f, "{} rows inserted", row_ids.len())
+                }
             }
             ExecutionResult::Select { column_names, rows, plan } => {
                 if !plan.is_empty() {
@@ -71,12 +76,14 @@ impl std::fmt::Display for ExecutionResult {
             ExecutionResult::CreateIndex {
                 index_name,
                 table_name,
-                column_name,
+                columns,
             } => {
                 write!(
                     f,
-                    "Index '{}' created on {}.{}",
-                    index_name, table_name, column_name
+                    "Index '{}' created on {}({})",
+                    index_name,
+                    table_name,
+                    columns.join(", ")
                 )
             }
         }
@@ -84,7 +91,53 @@ impl std::fmt::Display for ExecutionResult {
 }
 
 /// Index key: (table_name, column_name)
-type IndexKey = (String, String);
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct IndexKey {
+    table: String,
+    columns: Vec<String>,
+}
+
+struct IndexEntry {
+    name: String,
+    key: IndexKey,
+    column_indices: Vec<usize>,
+    tree: BPlusTree<CompositeKey, RowId>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct CompositeKey {
+    values: Vec<i64>,
+}
+
+impl CompositeKey {
+    fn new(values: Vec<i64>) -> Self {
+        Self { values }
+    }
+
+    fn min_values(len: usize) -> Self {
+        Self {
+            values: vec![i64::MIN; len],
+        }
+    }
+
+    fn max_values(len: usize) -> Self {
+        Self {
+            values: vec![i64::MAX; len],
+        }
+    }
+}
+
+impl PartialOrd for CompositeKey {
+    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for CompositeKey {
+    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+        self.values.cmp(&other.values)
+    }
+}
 
 /// Database executor with catalog
 ///
@@ -96,9 +149,8 @@ pub struct Executor {
     buffer_pool_size: usize,
     /// Table catalog (maps table name to HeapTable)
     tables: HashMap<String, HeapTable>,
-    /// Index catalog (maps (table_name, column_name) to B+ tree index)
-    /// Only supports INTEGER column indexes for now
-    indexes: HashMap<IndexKey, BPlusTree<i64, RowId>>,
+    /// Index catalog (multi-column B+Tree over integer columns)
+    indexes: Vec<IndexEntry>,
 }
 
 impl Executor {
@@ -126,12 +178,16 @@ impl Executor {
             }
         }
 
-        Ok(Self {
+        let mut executor = Self {
             db_path,
             buffer_pool_size,
             tables,
-            indexes: HashMap::new(),
-        })
+            indexes: Vec::new(),
+        };
+
+        executor.load_indexes_from_metadata()?;
+
+        Ok(executor)
     }
 
     /// Execute a SQL statement
@@ -206,35 +262,36 @@ impl Executor {
             )
         })?;
 
-        // Convert literals to values
-        let values: Vec<Value> = stmt
-            .values
-            .iter()
-            .map(|lit| match lit {
-                Literal::Integer(i) => Value::Integer(*i),
-                Literal::Boolean(b) => Value::Boolean(*b),
-                Literal::String(s) => Value::String(s.clone()),
-            })
-            .collect();
+        let mut row_ids = Vec::new();
 
-        // Insert the row
-        let row_id = table.insert(&values)?;
-
-        // Update any indexes on this table
-        let schema = table.schema().clone();
-        for ((idx_table, idx_column), index) in &mut self.indexes {
-            if idx_table == &stmt.table_name {
-                // Find the column index
-                if let Some((col_idx, _)) = schema.find_column(idx_column) {
-                    // Only support INTEGER indexes for now
-                    if let Value::Integer(key) = &values[col_idx] {
-                        index.insert(*key, row_id);
-                    }
-                }
+        for row_values in stmt.values {
+            if row_values.len() != table.schema().column_count() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Row does not match table schema",
+                ));
             }
+
+            let values: Vec<Value> = row_values
+                .iter()
+                .map(|lit| match lit {
+                    Literal::Integer(i) => Value::Integer(*i),
+                    Literal::Boolean(b) => Value::Boolean(*b),
+                    Literal::String(s) => Value::String(s.clone()),
+                })
+                .collect();
+
+            let row_id = table.insert(&values)?;
+
+            for index in self.indexes.iter_mut().filter(|idx| idx.key.table == stmt.table_name) {
+                let key = Self::build_composite_key(&values, &index.column_indices)?;
+                index.tree.insert(key, row_id);
+            }
+
+            row_ids.push(row_id);
         }
 
-        Ok(ExecutionResult::Insert { row_id })
+        Ok(ExecutionResult::Insert { row_ids })
     }
 
     /// Execute CREATE INDEX statement
@@ -249,29 +306,54 @@ impl Executor {
 
         let schema = table.schema().clone();
 
-        // Find the column
-        let (col_idx, column) = schema.find_column(&stmt.column_name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Column '{}' not found in table '{}'", stmt.column_name, stmt.table_name),
-            )
-        })?;
-
-        // Only support INTEGER columns for now
-        if column.data_type() != DbDataType::Integer {
+        if stmt.columns.is_empty() {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "Only INTEGER columns can be indexed",
+                "Index must include at least one column",
             ));
         }
 
-        // Check if index already exists
-        let index_key = (stmt.table_name.clone(), stmt.column_name.clone());
-        if self.indexes.contains_key(&index_key) {
+        // Ensure index name and column set are unique
+        if self.indexes.iter().any(|idx| idx.name == stmt.index_name) {
             return Err(io::Error::new(
                 io::ErrorKind::AlreadyExists,
-                format!("Index on {}.{} already exists", stmt.table_name, stmt.column_name),
+                format!("Index '{}' already exists", stmt.index_name),
             ));
+        }
+
+        if self
+            .indexes
+            .iter()
+            .any(|idx| idx.key.table == stmt.table_name && idx.key.columns == stmt.columns)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!(
+                    "Index on {}({}) already exists",
+                    stmt.table_name,
+                    stmt.columns.join(", ")
+                ),
+            ));
+        }
+
+        // Resolve and validate columns
+        let mut column_indices = Vec::new();
+        for col_name in &stmt.columns {
+            let (idx, column) = schema.find_column(col_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Column '{}' not found in table '{}'", col_name, stmt.table_name),
+                )
+            })?;
+
+            if column.data_type() != DbDataType::Integer {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Only INTEGER columns can be indexed",
+                ));
+            }
+
+            column_indices.push(idx);
         }
 
         // Create the index and populate it with existing data
@@ -280,18 +362,27 @@ impl Executor {
         // Scan the table and add all existing rows to the index
         let mut scan = TableScan::new(table);
         while let Some((row_id, row)) = scan.next()? {
-            if let Value::Integer(key) = &row[col_idx] {
-                index.insert(*key, row_id);
-            }
+            let key = Self::build_composite_key(&row, &column_indices)?;
+            index.insert(key, row_id);
         }
 
-        // Store the index
-        self.indexes.insert(index_key, index);
+        let entry = IndexEntry {
+            name: stmt.index_name.clone(),
+            key: IndexKey {
+                table: stmt.table_name.clone(),
+                columns: stmt.columns.clone(),
+            },
+            column_indices,
+            tree: index,
+        };
+
+        self.indexes.push(entry);
+        self.persist_index_metadata()?;
 
         Ok(ExecutionResult::CreateIndex {
             index_name: stmt.index_name,
             table_name: stmt.table_name,
-            column_name: stmt.column_name,
+            columns: stmt.columns,
         })
     }
 
@@ -339,8 +430,8 @@ impl Executor {
             Self::build_projection(&columns_meta, &columns, false)?;
 
         let row_ids = match scan_plan {
-            ScanPlan::IndexScan { column, op, value } => {
-                self.index_scan(&table_name, &column, op, &value)?
+            ScanPlan::IndexScan { index_columns, predicates } => {
+                self.index_scan(&table_name, &index_columns, &predicates)?
             }
             ScanPlan::SeqScan => None,
         };
@@ -467,7 +558,9 @@ impl Executor {
         );
         let right_join_is_integer =
             right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
-        let use_right_index = join_plan.inner_has_index && right_join_is_integer && self.indexes.contains_key(&index_key);
+        let use_right_index = join_plan.inner_has_index
+            && right_join_is_integer
+            && self.find_index_on_first_column(&index_key.0, &index_key.1).is_some();
 
         let mut plan_steps = Vec::new();
         plan_steps.push(format!("Seq scan outer table {}", join_plan.outer_table));
@@ -518,8 +611,20 @@ impl Executor {
                 if let Value::Integer(key) = left_key {
                     // Look up matching row IDs via index first
                     let mut matched_ids = Vec::new();
-                    if let Some(index) = self.indexes.get(&index_key) {
-                        if let Some(&row_id) = index.search(&key) {
+                    if let Some(index) = self.find_index_on_first_column(&index_key.0, &index_key.1) {
+                        let len = index.key.columns.len();
+                        let start = {
+                            let mut vals = vec![i64::MIN; len];
+                            vals[0] = key;
+                            CompositeKey::new(vals)
+                        };
+                        let end = {
+                            let mut vals = vec![i64::MAX; len];
+                            vals[0] = key;
+                            CompositeKey::new(vals)
+                        };
+
+                        for (_k, row_id) in index.tree.range_scan(&start, &end) {
                             matched_ids.push(row_id);
                         }
                     }
@@ -579,56 +684,27 @@ impl Executor {
     fn index_scan(
         &self,
         table_name: &str,
-        column_name: &str,
-        op: BinaryOp,
-        literal_value: &Literal,
+        index_columns: &[String],
+        predicates: &[(String, BinaryOp, Literal)],
     ) -> io::Result<Option<Vec<RowId>>> {
-        let index_key = (table_name.to_string(), column_name.to_string());
-        if let Some(index) = self.indexes.get(&index_key) {
-            if let Literal::Integer(key) = literal_value {
-                let mut row_ids = Vec::new();
+        let index = match self.find_index(table_name, index_columns) {
+            Some(idx) => idx,
+            None => return Ok(None),
+        };
 
-                match op {
-                    BinaryOp::Eq => {
-                        if let Some(&row_id) = index.search(key) {
-                            row_ids.push(row_id);
-                        }
-                    }
-                    BinaryOp::Lt => {
-                        for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
-                            row_ids.push(v);
-                        }
-                    }
-                    BinaryOp::LtEq => {
-                        for (_k, v) in index.range_scan(&i64::MIN, key) {
-                            row_ids.push(v);
-                        }
-                    }
-                    BinaryOp::Gt => {
-                        for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
-                            row_ids.push(v);
-                        }
-                    }
-                    BinaryOp::GtEq => {
-                        for (_k, v) in index.range_scan(key, &i64::MAX) {
-                            row_ids.push(v);
-                        }
-                    }
-                    BinaryOp::NotEq => {
-                        for (_k, v) in index.range_scan(&i64::MIN, &(key - 1)) {
-                            row_ids.push(v);
-                        }
-                        for (_k, v) in index.range_scan(&(key + 1), &i64::MAX) {
-                            row_ids.push(v);
-                        }
-                    }
-                }
+        let ranges = Self::build_ranges(index, predicates)?;
+        if ranges.is_empty() {
+            return Ok(None);
+        }
 
-                return Ok(Some(row_ids));
+        let mut row_ids = Vec::new();
+        for (start, end) in ranges {
+            for (_k, v) in index.tree.range_scan(&start, &end) {
+                row_ids.push(v);
             }
         }
 
-        Ok(None)
+        Ok(Some(row_ids))
     }
 
     /// Evaluate a predicate expression against a row (static version)
@@ -639,6 +715,14 @@ impl Executor {
     ) -> io::Result<bool> {
         match expr {
             Expr::BinaryOp { left, op, right } => {
+                if *op == BinaryOp::And {
+                    let left_result = Self::evaluate_predicate_static(left, row, columns)?;
+                    if !left_result {
+                        return Ok(false);
+                    }
+                    return Self::evaluate_predicate_static(right, row, columns);
+                }
+
                 let left_val = Self::evaluate_expr_static(left, row, columns)?;
                 let right_val = Self::evaluate_expr_static(right, row, columns)?;
 
@@ -649,6 +733,7 @@ impl Executor {
                     BinaryOp::LtEq => left_val <= right_val,
                     BinaryOp::Gt => left_val > right_val,
                     BinaryOp::GtEq => left_val >= right_val,
+                    BinaryOp::And => unreachable!(),
                 };
 
                 Ok(result)
@@ -688,10 +773,13 @@ impl Executor {
         self.tables.get_mut(name)
     }
 
-    fn index_metadata(&self) -> HashSet<(String, String)> {
+    fn index_metadata(&self) -> Vec<IndexMetadata> {
         self.indexes
-            .keys()
-            .cloned()
+            .iter()
+            .map(|idx| IndexMetadata {
+                table: idx.key.table.clone(),
+                columns: idx.key.columns.clone(),
+            })
             .collect()
     }
 
@@ -813,16 +901,203 @@ impl Executor {
             })
     }
 
+    fn build_composite_key(row: &[Value], column_indices: &[usize]) -> io::Result<CompositeKey> {
+        let mut values = Vec::with_capacity(column_indices.len());
+        for &idx in column_indices {
+            match row.get(idx) {
+                Some(Value::Integer(i)) => values.push(*i),
+                _ => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Indexing currently only supports INTEGER columns",
+                    ))
+                }
+            }
+        }
+        Ok(CompositeKey::new(values))
+    }
+
+    fn find_index_on_first_column(&self, table: &str, column: &str) -> Option<&IndexEntry> {
+        self.indexes
+            .iter()
+            .find(|idx| idx.key.table == table && idx.key.columns.first().map_or(false, |c| c == column))
+    }
+
+    fn find_index(&self, table: &str, columns: &[String]) -> Option<&IndexEntry> {
+        self.indexes
+            .iter()
+            .find(|idx| idx.key.table == table && idx.key.columns == columns)
+    }
+
+    fn build_ranges(
+        index: &IndexEntry,
+        predicates: &[(String, BinaryOp, Literal)],
+    ) -> io::Result<Vec<(CompositeKey, CompositeKey)>> {
+        if predicates.is_empty() {
+            return Ok(Vec::new());
+        }
+
+        let len = index.key.columns.len();
+        let mut start = CompositeKey::min_values(len);
+        let mut end = CompositeKey::max_values(len);
+        let mut eq_prefix = true;
+
+        for (i, col_name) in index.key.columns.iter().enumerate() {
+            let pred = predicates.iter().find(|(c, _, _)| c == col_name);
+            let Some((_, op, lit)) = pred else {
+                break;
+            };
+
+            let Literal::Integer(val) = lit else {
+                return Ok(Vec::new());
+            };
+
+            if !eq_prefix {
+                break;
+            }
+
+            match op {
+                BinaryOp::Eq => {
+                    start.values[i] = *val;
+                    end.values[i] = *val;
+                }
+                BinaryOp::Lt => {
+                    end.values[i] = val.saturating_sub(1);
+                    eq_prefix = false;
+                }
+                BinaryOp::LtEq => {
+                    end.values[i] = *val;
+                    eq_prefix = false;
+                }
+                BinaryOp::Gt => {
+                    start.values[i] = val.saturating_add(1);
+                    eq_prefix = false;
+                }
+                BinaryOp::GtEq => {
+                    start.values[i] = *val;
+                    eq_prefix = false;
+                }
+                BinaryOp::NotEq => {
+                    if i == 0 {
+                        let mut ranges = Vec::new();
+                        if *val > i64::MIN {
+                            let mut left_end = end.clone();
+                            left_end.values[0] = val.saturating_sub(1);
+                            ranges.push((start.clone(), left_end));
+                        }
+                        if *val < i64::MAX {
+                            let mut right_start = start.clone();
+                            right_start.values[0] = val.saturating_add(1);
+                            ranges.push((right_start, CompositeKey::max_values(len)));
+                        }
+                        return Ok(ranges);
+                    } else {
+                        return Ok(Vec::new());
+                    }
+                }
+                BinaryOp::And => unreachable!(),
+            }
+        }
+
+        Ok(vec![(start, end)])
+    }
+
+    fn persist_index_metadata(&self) -> io::Result<()> {
+        let path = self.db_path.join("indexes.meta");
+        let mut buf = String::new();
+        for idx in &self.indexes {
+            buf.push_str(&format!(
+                "{}|{}|{}\n",
+                idx.name,
+                idx.key.table,
+                idx.key.columns.join(",")
+            ));
+        }
+        fs::write(path, buf)
+    }
+
+    fn load_indexes_from_metadata(&mut self) -> io::Result<()> {
+        let path = self.db_path.join("indexes.meta");
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let data = fs::read_to_string(&path)?;
+        for line in data.lines() {
+            let mut parts = line.split('|');
+            let (Some(name), Some(table), Some(cols_str)) = (parts.next(), parts.next(), parts.next()) else {
+                continue;
+            };
+
+            let columns: Vec<String> = cols_str
+                .split(',')
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string())
+                .collect();
+            if columns.is_empty() {
+                continue;
+            }
+
+            let table_ref = match self.tables.get_mut(table) {
+                Some(t) => t,
+                None => continue,
+            };
+            let schema = table_ref.schema().clone();
+
+            let mut column_indices = Vec::new();
+            for col in &columns {
+                if let Some((idx, column)) = schema.find_column(col) {
+                    if column.data_type() != DbDataType::Integer {
+                        column_indices.clear();
+                        break;
+                    }
+                    column_indices.push(idx);
+                } else {
+                    column_indices.clear();
+                    break;
+                }
+            }
+            if column_indices.is_empty() {
+                continue;
+            }
+
+            let mut tree = BPlusTree::new();
+            let mut scan = TableScan::new(table_ref);
+            while let Some((row_id, row)) = scan.next()? {
+                let key = Self::build_composite_key(&row, &column_indices)?;
+                tree.insert(key, row_id);
+            }
+
+            self.indexes.push(IndexEntry {
+                name: name.to_string(),
+                key: IndexKey {
+                    table: table.to_string(),
+                    columns: columns.clone(),
+                },
+                column_indices,
+                tree,
+            });
+        }
+
+        Ok(())
+    }
+
     fn describe_scan(table: &str, scan_plan: &ScanPlan) -> String {
         match scan_plan {
             ScanPlan::SeqScan => format!("Seq scan on {}", table),
-            ScanPlan::IndexScan { column, op, value } => format!(
-                "Index scan on {} using {} {} {}",
-                table,
-                column,
-                Self::format_binary_op(*op),
-                value
-            ),
+            ScanPlan::IndexScan { index_columns, predicates } => {
+                let pred_str = predicates
+                    .iter()
+                    .map(|(col, op, lit)| format!("{} {} {}", col, Self::format_binary_op(*op), lit))
+                    .collect::<Vec<_>>()
+                    .join(" AND ");
+                format!(
+                    "Index scan on {} using ({}) with {}",
+                    table,
+                    index_columns.join(", "),
+                    pred_str
+                )
+            }
         }
     }
 
@@ -847,6 +1122,7 @@ impl Executor {
             BinaryOp::LtEq => "<=",
             BinaryOp::Gt => ">",
             BinaryOp::GtEq => ">=",
+            BinaryOp::And => "AND",
         }
     }
 
@@ -870,6 +1146,20 @@ impl Executor {
         self.tables
             .iter()
             .map(|(name, table)| (name.clone(), table.schema().clone()))
+            .collect()
+    }
+
+    /// Return index metadata currently loaded.
+    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>)> {
+        self.indexes
+            .iter()
+            .map(|idx| {
+                (
+                    idx.name.clone(),
+                    idx.key.table.clone(),
+                    idx.key.columns.clone(),
+                )
+            })
             .collect()
     }
 }
@@ -933,7 +1223,9 @@ mod tests {
         let result = executor.execute(stmt).unwrap();
 
         match result {
-            ExecutionResult::Insert { row_id } => {
+            ExecutionResult::Insert { row_ids } => {
+                assert_eq!(row_ids.len(), 1);
+                let row_id = row_ids[0];
                 assert_eq!(row_id.page_id(), 1); // First data page
                 assert_eq!(row_id.slot_id(), 0); // First slot
             }
@@ -981,6 +1273,32 @@ mod tests {
         let result = executor.execute(stmt);
 
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_insert_multi_tuple_single_statement() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE pairs (id INTEGER, val INTEGER)").unwrap()).unwrap();
+        let result = executor
+            .execute(parse_sql("INSERT INTO pairs VALUES (1, 2), (3, 4)").unwrap())
+            .unwrap();
+
+        match result {
+            ExecutionResult::Insert { row_ids } => {
+                assert_eq!(row_ids.len(), 2);
+            }
+            _ => panic!("Expected Insert result"),
+        }
+
+        let result = executor.execute(parse_sql("SELECT * FROM pairs").unwrap()).unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 2);
+            }
+            _ => panic!("Expected Select result"),
+        }
     }
 
     #[test]
@@ -1241,10 +1559,10 @@ mod tests {
         let result = executor.execute(parse_sql("CREATE INDEX idx_id ON users(id)").unwrap()).unwrap();
 
         match result {
-            ExecutionResult::CreateIndex { index_name, table_name, column_name } => {
+            ExecutionResult::CreateIndex { index_name, table_name, columns } => {
                 assert_eq!(index_name, "idx_id");
                 assert_eq!(table_name, "users");
-                assert_eq!(column_name, "id");
+                assert_eq!(columns, vec!["id".to_string()]);
             }
             _ => panic!("Expected CreateIndex result"),
         }
@@ -1363,6 +1681,73 @@ mod tests {
         match result {
             ExecutionResult::Select { rows, .. } => {
                 assert_eq!(rows.len(), 3);
+            }
+            _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_multi_column_index_prefix_scan() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO items VALUES (1, 10, 100)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO items VALUES (1, 20, 200)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO items VALUES (2, 30, 300)").unwrap()).unwrap();
+
+        executor.execute(parse_sql("CREATE INDEX idx_ab ON items(a, b)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql("SELECT a, b FROM items WHERE a = 1").unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { column_names, rows, plan } => {
+                assert_eq!(column_names, vec!["a".to_string(), "b".to_string()]);
+                assert_eq!(rows.len(), 2);
+                assert!(plan.iter().any(|step| step.contains("Index scan")), "plan did not use index: {:?}", plan);
+            }
+            _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_multi_column_index_with_and_predicate() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE test (id INTEGER, val INTEGER)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO test VALUES (1, 2)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO test VALUES (2, 3)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO test VALUES (4, 1)").unwrap()).unwrap();
+
+        executor.execute(parse_sql("CREATE INDEX test_id_val ON test(id, val)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql("SELECT * FROM test WHERE id < 3 AND val < 3").unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { rows, plan, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert!(plan.iter().any(|p| p.contains("id < 3 AND val < 3")));
+            }
+            _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_multi_column_index_prefix_range_plan() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE t (id INTEGER, val INTEGER)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO t VALUES (1, 1)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO t VALUES (5, 5)").unwrap()).unwrap();
+        executor.execute(parse_sql("CREATE INDEX idx_id_val ON t(id, val)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql("SELECT * FROM t WHERE id < 3").unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { plan, .. } => {
+                assert!(plan.iter().any(|p| p.contains("Index scan")));
             }
             _ => panic!("Expected Select result"),
         }

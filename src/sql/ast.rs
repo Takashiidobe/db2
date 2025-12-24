@@ -70,11 +70,11 @@ impl std::fmt::Display for Literal {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct InsertStmt {
     pub table_name: String,
-    pub values: Vec<Literal>,
+    pub values: Vec<Vec<Literal>>,
 }
 
 impl InsertStmt {
-    pub fn new(table_name: impl Into<String>, values: Vec<Literal>) -> Self {
+    pub fn new(table_name: impl Into<String>, values: Vec<Vec<Literal>>) -> Self {
         Self {
             table_name: table_name.into(),
             values,
@@ -107,6 +107,7 @@ pub enum BinaryOp {
     LtEq,  // <=
     Gt,    // >
     GtEq,  // >=
+    And,   // AND
 }
 
 /// Expression in SQL
@@ -183,19 +184,19 @@ impl SelectStmt {
 pub struct CreateIndexStmt {
     pub index_name: String,
     pub table_name: String,
-    pub column_name: String,
+    pub columns: Vec<String>,
 }
 
 impl CreateIndexStmt {
     pub fn new(
         index_name: impl Into<String>,
         table_name: impl Into<String>,
-        column_name: impl Into<String>,
+        columns: Vec<String>,
     ) -> Self {
         Self {
             index_name: index_name.into(),
             table_name: table_name.into(),
-            column_name: column_name.into(),
+            columns,
         }
     }
 }
@@ -254,10 +255,10 @@ mod tests {
     fn test_insert_stmt() {
         let stmt = InsertStmt::new(
             "users",
-            vec![Literal::Integer(1), Literal::String("Alice".to_string())],
+            vec![vec![Literal::Integer(1), Literal::String("Alice".to_string())]],
         );
         assert_eq!(stmt.table_name, "users");
-        assert_eq!(stmt.values.len(), 2);
+        assert_eq!(stmt.values.len(), 1);
     }
 
     #[test]
@@ -268,7 +269,7 @@ mod tests {
         ));
         assert!(matches!(create, Statement::CreateTable(_)));
 
-        let insert = Statement::Insert(InsertStmt::new("test", vec![Literal::Integer(1)]));
+        let insert = Statement::Insert(InsertStmt::new("test", vec![vec![Literal::Integer(1)]]));
         assert!(matches!(insert, Statement::Insert(_)));
     }
 }
