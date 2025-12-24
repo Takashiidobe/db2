@@ -27,7 +27,13 @@ pub struct JoinPlan {
     pub inner_table: String,
     pub outer_column: ColumnRef,
     pub inner_column: ColumnRef,
-    pub inner_has_index: bool,
+    pub strategy: JoinStrategy,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum JoinStrategy {
+    NestedLoop { inner_has_index: bool },
+    MergeJoin,
 }
 
 /// FROM clause plan.
@@ -86,39 +92,43 @@ impl Planner {
                     .iter()
                     .any(|idx| idx.table == *left_table && idx.columns.first() == Some(&left_column.column));
 
-                let (outer_table, inner_table, outer_col, inner_col, inner_has_index) =
-                    if right_indexed {
-                        (
-                            left_table.clone(),
-                            right_table.clone(),
-                            left_column.clone(),
-                            right_column.clone(),
-                            true,
-                        )
-                    } else if left_indexed {
-                        (
-                            right_table.clone(),
-                            left_table.clone(),
-                            right_column.clone(),
-                            left_column.clone(),
-                            true,
-                        )
-                    } else {
-                        (
-                            left_table.clone(),
-                            right_table.clone(),
-                            left_column.clone(),
-                            right_column.clone(),
-                            false,
-                        )
-                    };
+                let (outer_table, inner_table, outer_col, inner_col) = if right_indexed {
+                    (
+                        left_table.clone(),
+                        right_table.clone(),
+                        left_column.clone(),
+                        right_column.clone(),
+                    )
+                } else if left_indexed {
+                    (
+                        right_table.clone(),
+                        left_table.clone(),
+                        right_column.clone(),
+                        left_column.clone(),
+                    )
+                } else {
+                    (
+                        left_table.clone(),
+                        right_table.clone(),
+                        left_column.clone(),
+                        right_column.clone(),
+                    )
+                };
+
+                let strategy = if right_indexed || left_indexed {
+                    JoinStrategy::NestedLoop {
+                        inner_has_index: true,
+                    }
+                } else {
+                    JoinStrategy::MergeJoin
+                };
 
                 FromClausePlan::Join(JoinPlan {
                     outer_table,
                     inner_table,
                     outer_column: outer_col,
                     inner_column: inner_col,
-                    inner_has_index,
+                    strategy,
                 })
             }
         };
@@ -261,7 +271,10 @@ mod tests {
             FromClausePlan::Join(join_plan) => {
                 assert_eq!(join_plan.outer_table, "users");
                 assert_eq!(join_plan.inner_table, "orders");
-                assert!(join_plan.inner_has_index);
+                assert!(matches!(
+                    join_plan.strategy,
+                    JoinStrategy::NestedLoop { inner_has_index: true }
+                ));
             }
             _ => panic!("Expected join plan"),
         }
@@ -290,7 +303,10 @@ mod tests {
             FromClausePlan::Join(join_plan) => {
                 assert_eq!(join_plan.outer_table, "orders");
                 assert_eq!(join_plan.inner_table, "users");
-                assert!(join_plan.inner_has_index);
+                assert!(matches!(
+                    join_plan.strategy,
+                    JoinStrategy::NestedLoop { inner_has_index: true }
+                ));
             }
             _ => panic!("Expected join plan"),
         }

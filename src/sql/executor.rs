@@ -3,7 +3,7 @@ use super::ast::{
     Statement,
 };
 use crate::index::BPlusTree;
-use crate::optimizer::planner::{FromClausePlan, IndexMetadata, JoinPlan, Planner, ScanPlan};
+use crate::optimizer::planner::{FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use std::collections::HashMap;
@@ -536,6 +536,47 @@ impl Executor {
         let (column_indices, column_names) =
             Self::build_projection(&combined_meta, &columns, true)?;
 
+        match join_plan.strategy {
+            JoinStrategy::NestedLoop { inner_has_index } => {
+                self.execute_nested_loop_join(
+                    join_plan,
+                    where_clause,
+                    left_join_idx,
+                    right_join_idx,
+                    &right_schema,
+                    &combined_meta,
+                    column_indices,
+                    column_names,
+                    inner_has_index,
+                )
+            }
+            JoinStrategy::MergeJoin => {
+                self.execute_merge_join(
+                    join_plan,
+                    where_clause,
+                    left_join_idx,
+                    right_join_idx,
+                    &combined_meta,
+                    column_indices,
+                    column_names,
+                )
+            }
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_nested_loop_join(
+        &mut self,
+        join_plan: JoinPlan,
+        where_clause: Option<Expr>,
+        left_join_idx: usize,
+        right_join_idx: usize,
+        right_schema: &Schema,
+        combined_meta: &[(Option<String>, String)],
+        column_indices: Vec<usize>,
+        column_names: Vec<String>,
+        inner_has_index: bool,
+    ) -> io::Result<ExecutionResult> {
         // Preload left rows (outer loop)
         let left_rows = {
             let mut rows = Vec::new();
@@ -558,7 +599,7 @@ impl Executor {
         );
         let right_join_is_integer =
             right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
-        let use_right_index = join_plan.inner_has_index
+        let use_right_index = inner_has_index
             && right_join_is_integer
             && self.find_index_on_first_column(&index_key.0, &index_key.1).is_some();
 
@@ -657,7 +698,7 @@ impl Executor {
                 combined_row.extend(right_row);
 
                 if let Some(ref where_expr) = where_clause
-                    && !Self::evaluate_predicate_static(where_expr, &combined_row, &combined_meta)?
+                    && !Self::evaluate_predicate_static(where_expr, &combined_row, combined_meta)?
                 {
                     continue;
                 }
@@ -676,6 +717,119 @@ impl Executor {
             rows: result_rows,
             plan: plan_steps,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn execute_merge_join(
+        &mut self,
+        join_plan: JoinPlan,
+        where_clause: Option<Expr>,
+        left_join_idx: usize,
+        right_join_idx: usize,
+        combined_meta: &[(Option<String>, String)],
+        column_indices: Vec<usize>,
+        column_names: Vec<String>,
+    ) -> io::Result<ExecutionResult> {
+        let mut plan_steps = Vec::new();
+        plan_steps.push(format!(
+            "Merge join on {} = {}",
+            Self::format_column_ref(&join_plan.outer_column),
+            Self::format_column_ref(&join_plan.inner_column),
+        ));
+        plan_steps.push(format!("Sort {} on join key", join_plan.outer_table));
+        plan_steps.push(format!("Sort {} on join key", join_plan.inner_table));
+        if let Some(ref predicate) = where_clause {
+            plan_steps.push(format!("Filter: {}", Self::describe_expr(predicate)));
+        }
+
+        // Load and sort both sides by join key
+        let mut left_rows = self.load_sorted_rows(&join_plan.outer_table, left_join_idx)?;
+        let mut right_rows = self.load_sorted_rows(&join_plan.inner_table, right_join_idx)?;
+
+        left_rows.sort_by(|a, b| a.0.cmp(&b.0));
+        right_rows.sort_by(|a, b| a.0.cmp(&b.0));
+
+        let mut i = 0usize;
+        let mut j = 0usize;
+        let mut result_rows = Vec::new();
+
+        while i < left_rows.len() && j < right_rows.len() {
+            let left_key = &left_rows[i].0;
+            let right_key = &right_rows[j].0;
+
+            match left_key.cmp(right_key) {
+                std::cmp::Ordering::Less => i += 1,
+                std::cmp::Ordering::Greater => j += 1,
+                std::cmp::Ordering::Equal => {
+                    let i_end = Self::advance_run_end(&left_rows, i);
+                    let j_end = Self::advance_run_end(&right_rows, j);
+
+                    for li in i..i_end {
+                        for rj in j..j_end {
+                            let mut combined = Vec::new();
+                            combined.extend(left_rows[li].1.clone());
+                            combined.extend(right_rows[rj].1.clone());
+
+                            if let Some(ref where_expr) = where_clause
+                                && !Self::evaluate_predicate_static(where_expr, &combined, combined_meta)?
+                            {
+                                continue;
+                            }
+
+                            let projected_row: Vec<Value> = column_indices
+                                .iter()
+                                .map(|&idx| combined[idx].clone())
+                                .collect();
+                            result_rows.push(projected_row);
+                        }
+                    }
+
+                    i = i_end;
+                    j = j_end;
+                }
+            }
+        }
+
+        Ok(ExecutionResult::Select {
+            column_names,
+            rows: result_rows,
+            plan: plan_steps,
+        })
+    }
+
+    fn load_sorted_rows(
+        &mut self,
+        table_name: &str,
+        join_idx: usize,
+    ) -> io::Result<Vec<(Value, Vec<Value>)>> {
+        let table_ref = self.tables.get_mut(table_name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Table '{}' does not exist", table_name),
+            )
+        })?;
+
+        let mut scan = TableScan::new(table_ref);
+        let mut rows = Vec::new();
+        while let Some((_row_id, row)) = scan.next()? {
+            if join_idx >= row.len() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Join column index {} out of bounds for table {}", join_idx, table_name),
+                ));
+            }
+            rows.push((row[join_idx].clone(), row));
+        }
+        Ok(rows)
+    }
+
+    fn advance_run_end(rows: &[(Value, Vec<Value>)], start: usize) -> usize {
+        let key = &rows[start].0;
+        let mut idx = start + 1;
+        while idx < rows.len() && rows[idx].0 == *key {
+            idx += 1;
+        }
+        idx
     }
 
 
