@@ -6,11 +6,28 @@ fn main() -> io::Result<()> {
     println!("========================");
     println!("Commands:");
     println!("  CREATE TABLE <name> (<col1> <type>, <col2> <type>, ...)");
+    println!("  CREATE INDEX <idx_name> ON <table>(<column>)");
     println!("  INSERT INTO <name> VALUES (<val1>, <val2>, ...)");
     println!("  .exit - Exit the program");
     println!();
 
     let mut executor = Executor::new("./data", 100)?;
+
+    let tables = executor.list_tables();
+    if tables.is_empty() {
+        println!("Tables: (none loaded)");
+    } else {
+        println!("Tables:");
+        for (name, schema) in tables {
+            let cols: Vec<String> = schema
+                .columns()
+                .iter()
+                .map(|c| format!("{} {}", c.name(), c.data_type()))
+                .collect();
+            println!("  - {}: {}", name, cols.join(", "));
+        }
+    }
+    println!();
 
     loop {
         print!("sql> ");

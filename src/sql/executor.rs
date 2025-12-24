@@ -7,6 +7,7 @@ use crate::optimizer::planner::{FromClausePlan, JoinPlan, Planner, ScanPlan};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use std::collections::{HashMap, HashSet};
+use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
@@ -21,6 +22,7 @@ pub enum ExecutionResult {
     Select {
         column_names: Vec<String>,
         rows: Vec<Vec<Value>>,
+        plan: Vec<String>,
     },
     /// Index created successfully
     CreateIndex {
@@ -44,7 +46,16 @@ impl std::fmt::Display for ExecutionResult {
                     row_id.slot_id()
                 )
             }
-            ExecutionResult::Select { column_names, rows } => {
+            ExecutionResult::Select { column_names, rows, plan } => {
+                if !plan.is_empty() {
+                    write!(f, "Plan:")?;
+                    for step in plan {
+                        writeln!(f)?;
+                        write!(f, "  - {}", step)?;
+                    }
+                    writeln!(f)?;
+                    writeln!(f)?;
+                }
                 // Print column headers
                 writeln!(f, "{}", column_names.join(" | "))?;
                 writeln!(f, "{}", "-".repeat(column_names.len() * 10))?;
@@ -104,10 +115,21 @@ impl Executor {
             std::fs::create_dir_all(&db_path)?;
         }
 
+        // Load existing heap tables from disk
+        let mut tables = HashMap::new();
+        for entry in fs::read_dir(&db_path)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.extension().and_then(|ext| ext.to_str()) == Some("db") {
+                let table = HeapTable::open(&path, buffer_pool_size)?;
+                tables.insert(table.name().to_string(), table);
+            }
+        }
+
         Ok(Self {
             db_path,
             buffer_pool_size,
-            tables: HashMap::new(),
+            tables,
             indexes: HashMap::new(),
         })
     }
@@ -148,6 +170,7 @@ impl Executor {
             .map(|col| {
                 let db_type = match col.data_type {
                     super::ast::DataType::Integer => DbDataType::Integer,
+                    super::ast::DataType::Boolean => DbDataType::Boolean,
                     super::ast::DataType::Varchar => DbDataType::String,
                 };
                 Column::new(&col.name, db_type)
@@ -189,6 +212,7 @@ impl Executor {
             .iter()
             .map(|lit| match lit {
                 Literal::Integer(i) => Value::Integer(*i),
+                Literal::Boolean(b) => Value::Boolean(*b),
                 Literal::String(s) => Value::String(s.clone()),
             })
             .collect();
@@ -293,6 +317,12 @@ impl Executor {
         where_clause: Option<Expr>,
         scan_plan: ScanPlan,
     ) -> io::Result<ExecutionResult> {
+        let mut plan_steps = Vec::new();
+        plan_steps.push(Self::describe_scan(&table_name, &scan_plan));
+        if let Some(ref predicate) = where_clause {
+            plan_steps.push(format!("Filter: {}", Self::describe_expr(predicate)));
+        }
+
         // Get schema first (before any mutable borrows)
         let schema = {
             let table = self.tables.get(&table_name).ok_or_else(|| {
@@ -369,6 +399,7 @@ impl Executor {
         Ok(ExecutionResult::Select {
             column_names,
             rows: result_rows,
+            plan: plan_steps,
         })
     }
 
@@ -437,6 +468,27 @@ impl Executor {
         let right_join_is_integer =
             right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
         let use_right_index = join_plan.inner_has_index && right_join_is_integer && self.indexes.contains_key(&index_key);
+
+        let mut plan_steps = Vec::new();
+        plan_steps.push(format!("Seq scan outer table {}", join_plan.outer_table));
+        plan_steps.push(format!(
+            "Nested loop join outer={} inner={} on {} = {}",
+            join_plan.outer_table,
+            join_plan.inner_table,
+            Self::format_column_ref(&join_plan.outer_column),
+            Self::format_column_ref(&join_plan.inner_column),
+        ));
+        if use_right_index {
+            plan_steps.push(format!(
+                "Use index on {}.{} for inner lookups",
+                join_plan.inner_table, join_plan.inner_column.column
+            ));
+        } else {
+            plan_steps.push(format!("Seq scan inner table {}", join_plan.inner_table));
+        }
+        if let Some(ref predicate) = where_clause {
+            plan_steps.push(format!("Filter: {}", Self::describe_expr(predicate)));
+        }
 
         // If not using index, load right rows once
         let right_rows_cache: Option<Vec<Vec<Value>>> = if use_right_index {
@@ -517,6 +569,7 @@ impl Executor {
         Ok(ExecutionResult::Select {
             column_names,
             rows: result_rows,
+            plan: plan_steps,
         })
     }
 
@@ -618,6 +671,7 @@ impl Executor {
             Expr::Literal(lit) => {
                 let val = match lit {
                     Literal::Integer(i) => Value::Integer(*i),
+                    Literal::Boolean(b) => Value::Boolean(*b),
                     Literal::String(s) => Value::String(s.clone()),
                 };
                 Ok(val)
@@ -759,12 +813,64 @@ impl Executor {
             })
     }
 
+    fn describe_scan(table: &str, scan_plan: &ScanPlan) -> String {
+        match scan_plan {
+            ScanPlan::SeqScan => format!("Seq scan on {}", table),
+            ScanPlan::IndexScan { column, op, value } => format!(
+                "Index scan on {} using {} {} {}",
+                table,
+                column,
+                Self::format_binary_op(*op),
+                value
+            ),
+        }
+    }
+
+    fn describe_expr(expr: &Expr) -> String {
+        match expr {
+            Expr::Column(col_ref) => Self::format_column_ref(col_ref),
+            Expr::Literal(lit) => lit.to_string(),
+            Expr::BinaryOp { left, op, right } => format!(
+                "{} {} {}",
+                Self::describe_expr(left),
+                Self::format_binary_op(*op),
+                Self::describe_expr(right)
+            ),
+        }
+    }
+
+    fn format_binary_op(op: BinaryOp) -> &'static str {
+        match op {
+            BinaryOp::Eq => "=",
+            BinaryOp::NotEq => "!=",
+            BinaryOp::Lt => "<",
+            BinaryOp::LtEq => "<=",
+            BinaryOp::Gt => ">",
+            BinaryOp::GtEq => ">=",
+        }
+    }
+
+    fn format_column_ref(col_ref: &ColumnRef) -> String {
+        match &col_ref.table {
+            Some(table) => format!("{}.{}", table, col_ref.column),
+            None => col_ref.column.clone(),
+        }
+    }
+
     /// Flush all tables
     pub fn flush_all(&mut self) -> io::Result<()> {
         for table in self.tables.values_mut() {
             table.flush()?;
         }
         Ok(())
+    }
+
+    /// Return table names and schemas currently loaded.
+    pub fn list_tables(&self) -> Vec<(String, Schema)> {
+        self.tables
+            .iter()
+            .map(|(name, table)| (name.clone(), table.schema().clone()))
+            .collect()
     }
 }
 
@@ -941,6 +1047,23 @@ mod tests {
     }
 
     #[test]
+    fn test_reload_tables_from_disk() {
+        let temp_dir = TempDir::new().unwrap();
+        {
+            let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+            executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
+            executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
+            executor.flush_all().unwrap();
+        }
+
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+        let table = executor.get_table("users").expect("table should reload");
+        let row = table.get(RowId::new(1, 0)).unwrap();
+        assert_eq!(row[0], Value::Integer(1));
+        assert_eq!(row[1], Value::String("Alice".to_string()));
+    }
+
+    #[test]
     fn test_select_all() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
@@ -955,7 +1078,7 @@ mod tests {
         let result = executor.execute(parse_sql("SELECT * FROM users").unwrap()).unwrap();
 
         match result {
-            ExecutionResult::Select { column_names, rows } => {
+            ExecutionResult::Select { column_names, rows, .. } => {
                 assert_eq!(column_names, vec!["id", "name"]);
                 assert_eq!(rows.len(), 3);
                 assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string())]);
@@ -980,7 +1103,7 @@ mod tests {
         let result = executor.execute(parse_sql("SELECT name, age FROM users").unwrap()).unwrap();
 
         match result {
-            ExecutionResult::Select { column_names, rows } => {
+            ExecutionResult::Select { column_names, rows, .. } => {
                 assert_eq!(column_names, vec!["name", "age"]);
                 assert_eq!(rows.len(), 2);
                 assert_eq!(rows[0], vec![Value::String("Alice".to_string()), Value::Integer(30)]);
@@ -1058,6 +1181,27 @@ mod tests {
                 assert_eq!(rows.len(), 2);
                 assert_eq!(rows[0][0], Value::Integer(1));
                 assert_eq!(rows[1][0], Value::Integer(3));
+            }
+            _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_boolean_columns() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("CREATE TABLE flags (id INTEGER, active BOOLEAN)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO flags VALUES (1, true)").unwrap()).unwrap();
+        executor.execute(parse_sql("INSERT INTO flags VALUES (2, false)").unwrap()).unwrap();
+
+        let result = executor.execute(parse_sql("SELECT * FROM flags WHERE active = true").unwrap()).unwrap();
+
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0], Value::Integer(1));
+                assert_eq!(rows[0][1], Value::Boolean(true));
             }
             _ => panic!("Expected Select result"),
         }
@@ -1270,7 +1414,7 @@ mod tests {
         ).unwrap()).unwrap();
 
         match result {
-            ExecutionResult::Select { column_names, rows } => {
+            ExecutionResult::Select { column_names, rows, .. } => {
                 assert_eq!(
                     column_names,
                     vec![
@@ -1310,7 +1454,7 @@ mod tests {
         ).unwrap()).unwrap();
 
         match result {
-            ExecutionResult::Select { column_names, rows } => {
+            ExecutionResult::Select { column_names, rows, .. } => {
                 assert_eq!(column_names, vec!["orders.amount".to_string(), "users.name".to_string()]);
                 assert_eq!(rows.len(), 2);
                 assert!(rows.iter().any(|r| r[0] == Value::Integer(50) && r[1] == Value::String("Alice".to_string())));

@@ -36,6 +36,9 @@ enum Token {
     Values,
     Integer,
     Varchar,
+    Boolean,
+    True,
+    False,
     Select,
     From,
     Where,
@@ -75,6 +78,7 @@ impl std::fmt::Display for Token {
             Token::Values => write!(f, "VALUES"),
             Token::Integer => write!(f, "INTEGER"),
             Token::Varchar => write!(f, "VARCHAR"),
+            Token::Boolean => write!(f, "BOOLEAN"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -82,6 +86,8 @@ impl std::fmt::Display for Token {
             Token::On => write!(f, "ON"),
             Token::Join => write!(f, "JOIN"),
             Token::Dot => write!(f, "."),
+            Token::True => write!(f, "TRUE"),
+            Token::False => write!(f, "FALSE"),
             Token::LeftParen => write!(f, "("),
             Token::RightParen => write!(f, ")"),
             Token::Comma => write!(f, ","),
@@ -273,12 +279,15 @@ impl Tokenizer {
                     "VALUES" => Token::Values,
                     "INTEGER" => Token::Integer,
                     "VARCHAR" => Token::Varchar,
+                    "BOOLEAN" | "BOOL" => Token::Boolean,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
                     "INDEX" => Token::Index,
                     "ON" => Token::On,
                     "JOIN" => Token::Join,
+                    "TRUE" => Token::True,
+                    "FALSE" => Token::False,
                     _ => Token::Identifier(ident),
                 };
                 Ok(token)
@@ -346,8 +355,12 @@ impl Parser {
                 self.advance();
                 Ok(DataType::Varchar)
             }
+            Token::Boolean => {
+                self.advance();
+                Ok(DataType::Boolean)
+            }
             _ => Err(ParseError::UnexpectedToken {
-                expected: "data type (INTEGER or VARCHAR)".to_string(),
+                expected: "data type (INTEGER, BOOLEAN, or VARCHAR)".to_string(),
                 found: format!("{}", token),
             }),
         }
@@ -475,6 +488,14 @@ impl Parser {
                 self.advance();
                 Ok(Literal::String(s))
             }
+            Token::True => {
+                self.advance();
+                Ok(Literal::Boolean(true))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Literal::Boolean(false))
+            }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "literal value".to_string(),
                 found: format!("{}", token),
@@ -553,6 +574,14 @@ impl Parser {
             Token::StringLiteral(s) => {
                 self.advance();
                 Ok(Expr::Literal(Literal::String(s)))
+            }
+            Token::True => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Boolean(true)))
+            }
+            Token::False => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Boolean(false)))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "column name or literal".to_string(),
@@ -763,17 +792,19 @@ mod tests {
 
     #[test]
     fn test_parse_create_table_simple() {
-        let sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
+        let sql = "CREATE TABLE users (id INTEGER, active BOOLEAN, name VARCHAR)";
         let stmt = parse_sql(sql).unwrap();
 
         match stmt {
             Statement::CreateTable(create) => {
                 assert_eq!(create.table_name, "users");
-                assert_eq!(create.columns.len(), 2);
+                assert_eq!(create.columns.len(), 3);
                 assert_eq!(create.columns[0].name, "id");
                 assert_eq!(create.columns[0].data_type, DataType::Integer);
-                assert_eq!(create.columns[1].name, "name");
-                assert_eq!(create.columns[1].data_type, DataType::Varchar);
+                assert_eq!(create.columns[1].name, "active");
+                assert_eq!(create.columns[1].data_type, DataType::Boolean);
+                assert_eq!(create.columns[2].name, "name");
+                assert_eq!(create.columns[2].data_type, DataType::Varchar);
             }
             _ => panic!("Expected CreateTable statement"),
         }
@@ -795,15 +826,16 @@ mod tests {
 
     #[test]
     fn test_parse_insert() {
-        let sql = "INSERT INTO users VALUES (1, 'Alice')";
+        let sql = "INSERT INTO users VALUES (1, true, 'Alice')";
         let stmt = parse_sql(sql).unwrap();
 
         match stmt {
             Statement::Insert(insert) => {
                 assert_eq!(insert.table_name, "users");
-                assert_eq!(insert.values.len(), 2);
+                assert_eq!(insert.values.len(), 3);
                 assert_eq!(insert.values[0], Literal::Integer(1));
-                assert_eq!(insert.values[1], Literal::String("Alice".to_string()));
+                assert_eq!(insert.values[1], Literal::Boolean(true));
+                assert_eq!(insert.values[2], Literal::String("Alice".to_string()));
             }
             _ => panic!("Expected Insert statement"),
         }
@@ -836,6 +868,27 @@ mod tests {
                 assert_eq!(insert.values[0], Literal::String("it's working".to_string()));
             }
             _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_boolean_literal_in_where() {
+        let sql = "SELECT * FROM flags WHERE active = false";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                let where_expr = select.where_clause.expect("where clause");
+                match where_expr {
+                    Expr::BinaryOp { left, op, right } => {
+                        assert_eq!(op, BinaryOp::Eq);
+                        assert!(matches!(*left, Expr::Column(_)));
+                        assert!(matches!(*right, Expr::Literal(Literal::Boolean(false))));
+                    }
+                    _ => panic!("Expected binary op"),
+                }
+            }
+            _ => panic!("Expected Select statement"),
         }
     }
 

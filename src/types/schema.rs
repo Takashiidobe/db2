@@ -4,6 +4,7 @@ use super::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
     Integer,
+    Boolean,
     String,
 }
 
@@ -12,7 +13,9 @@ impl DataType {
     pub fn matches(&self, value: &Value) -> bool {
         matches!(
             (self, value),
-            (DataType::Integer, Value::Integer(_)) | (DataType::String, Value::String(_))
+            (DataType::Integer, Value::Integer(_))
+                | (DataType::Boolean, Value::Boolean(_))
+                | (DataType::String, Value::String(_))
         )
     }
 }
@@ -21,6 +24,7 @@ impl std::fmt::Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
+            DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::String => write!(f, "VARCHAR"),
         }
     }
@@ -172,7 +176,9 @@ mod tests {
     #[test]
     fn test_data_type_matches() {
         assert!(DataType::Integer.matches(&Value::Integer(42)));
+        assert!(DataType::Boolean.matches(&Value::Boolean(true)));
         assert!(!DataType::Integer.matches(&Value::String("hello".to_string())));
+        assert!(!DataType::Boolean.matches(&Value::Integer(0)));
         assert!(DataType::String.matches(&Value::String("hello".to_string())));
         assert!(!DataType::String.matches(&Value::Integer(42)));
     }

@@ -8,6 +8,7 @@ use std::io::{self, Cursor};
 enum TypeTag {
     Integer = 0,
     String = 1,
+    Boolean = 2,
 }
 
 impl TypeTag {
@@ -15,6 +16,7 @@ impl TypeTag {
         match value {
             0 => Ok(TypeTag::Integer),
             1 => Ok(TypeTag::String),
+            2 => Ok(TypeTag::Boolean),
             _ => Err(SerializationError::InvalidTypeTag(value)),
         }
     }
@@ -22,6 +24,7 @@ impl TypeTag {
     fn from_value(value: &Value) -> Self {
         match value {
             Value::Integer(_) => TypeTag::Integer,
+            Value::Boolean(_) => TypeTag::Boolean,
             Value::String(_) => TypeTag::String,
         }
     }
@@ -60,10 +63,11 @@ impl std::error::Error for SerializationError {}
 /// Column serialization format:
 /// ```text
 /// [4 bytes: value_count (u32)]
-/// [1 byte: type_tag (0=Integer, 1=String)]
+/// [1 byte: type_tag (0=Integer, 1=String, 2=Boolean)]
 /// [values...]
 ///
 /// For Integer: [8 bytes: i64] (repeated value_count times)
+/// For Boolean: [1 byte: 0 or 1]
 /// For String:  [4 bytes: length (u32)][length bytes: UTF-8 data] (repeated value_count times)
 /// ```
 pub struct ColumnSerializer;
@@ -100,6 +104,7 @@ impl ColumnSerializer {
 
             match value {
                 Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
+                Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
                 Value::String(s) => codec::write_string(&mut buf, s)?,
             }
         }
@@ -133,6 +138,10 @@ impl ColumnSerializer {
                 TypeTag::String => {
                     let s = codec::read_string(&mut cursor)?;
                     Value::String(s)
+                }
+                TypeTag::Boolean => {
+                    let b = codec::read_u8(&mut cursor)?;
+                    Value::Boolean(b != 0)
                 }
             };
             values.push(value);
@@ -170,6 +179,15 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_booleans() {
+        let values = vec![Value::Boolean(true), Value::Boolean(false)];
+        let bytes = ColumnSerializer::serialize(&values).unwrap();
+
+        // 4 bytes (count) + 1 byte (type) + 2 bytes for booleans
+        assert_eq!(bytes.len(), 4 + 1 + 2);
+    }
+
+    #[test]
     fn test_round_trip_integers() {
         let original = vec![
             Value::Integer(42),
@@ -193,6 +211,16 @@ mod tests {
             Value::String("".to_string()),
             Value::String("UTF-8: 世界 🌍".to_string()),
         ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_round_trip_booleans() {
+        let original = vec![Value::Boolean(true), Value::Boolean(false), Value::Boolean(true)];
 
         let bytes = ColumnSerializer::serialize(&original).unwrap();
         let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();

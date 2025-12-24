@@ -39,6 +39,7 @@ impl std::error::Error for RowSerializationError {}
 ///
 /// Value serialization:
 ///   Integer: [8 bytes: i64]
+///   Boolean: [1 byte: 0 or 1]
 ///   String:  [4 bytes: length (u32)][length bytes: UTF-8 data]
 /// ```
 pub struct RowSerializer;
@@ -75,6 +76,7 @@ impl RowSerializer {
         for value in row {
             match value {
                 Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
+                Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
                 Value::String(s) => codec::write_string(&mut buf, s)?,
             }
         }
@@ -117,6 +119,10 @@ impl RowSerializer {
                     let i = codec::read_i64(&mut cursor)?;
                     Value::Integer(i)
                 }
+                crate::types::DataType::Boolean => {
+                    let b = codec::read_u8(&mut cursor)?;
+                    Value::Boolean(b != 0)
+                }
                 crate::types::DataType::String => {
                     let s = codec::read_string(&mut cursor)?;
                     Value::String(s)
@@ -138,7 +144,7 @@ mod tests {
         Schema::new(vec![
             Column::new("id", DataType::Integer),
             Column::new("name", DataType::String),
-            Column::new("age", DataType::Integer),
+            Column::new("active", DataType::Boolean),
         ])
     }
 
@@ -147,15 +153,15 @@ mod tests {
         let row = vec![
             Value::Integer(1),
             Value::String("Alice".to_string()),
-            Value::Integer(30),
+            Value::Boolean(true),
         ];
 
         let bytes = RowSerializer::serialize(&row, None).unwrap();
 
         // Check format:
-        // 2 bytes (count=3) + 8 bytes (int) + (4 + 5) bytes (string "Alice") + 8 bytes (int)
-        // = 2 + 8 + 9 + 8 = 27 bytes
-        assert_eq!(bytes.len(), 2 + 8 + (4 + 5) + 8);
+        // 2 bytes (count=3) + 8 bytes (int) + (4 + 5) bytes (string "Alice") + 1 byte (bool)
+        // = 2 + 8 + 9 + 1 = 20 bytes
+        assert_eq!(bytes.len(), 2 + 8 + (4 + 5) + 1);
     }
 
     #[test]
@@ -164,7 +170,7 @@ mod tests {
         let original = vec![
             Value::Integer(1),
             Value::String("Alice".to_string()),
-            Value::Integer(30),
+            Value::Boolean(true),
         ];
 
         let bytes = RowSerializer::serialize(&original, Some(&schema)).unwrap();
@@ -179,7 +185,7 @@ mod tests {
         let original = vec![
             Value::Integer(42),
             Value::String("Bob".to_string()),
-            Value::Integer(25),
+            Value::Boolean(false),
         ];
 
         // Serialize without schema validation
@@ -299,13 +305,13 @@ mod tests {
         let row = vec![
             Value::Integer(1),
             Value::String("Alice".to_string()),
-            Value::Integer(30),
+            Value::Boolean(true),
         ];
 
         let mut bytes = RowSerializer::serialize(&row, Some(&schema)).unwrap();
 
         // Truncate the data
-        bytes.truncate(bytes.len() - 5);
+        bytes.truncate(bytes.len() - 1);
 
         let result = RowSerializer::deserialize(&bytes, &schema);
         assert!(matches!(result, Err(RowSerializationError::IoError(_))));

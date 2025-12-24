@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataType {
     Integer,
+    Boolean,
     Varchar,
 }
 
@@ -9,6 +10,7 @@ impl std::fmt::Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
+            DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::Varchar => write!(f, "VARCHAR"),
         }
     }
@@ -50,6 +52,7 @@ impl CreateTableStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
     Integer(i64),
+    Boolean(bool),
     String(String),
 }
 
@@ -57,6 +60,7 @@ impl std::fmt::Display for Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Literal::Integer(i) => write!(f, "{}", i),
+            Literal::Boolean(b) => write!(f, "{}", b),
             Literal::String(s) => write!(f, "'{}'", s),
         }
     }
@@ -212,6 +216,7 @@ mod tests {
     #[test]
     fn test_data_type_display() {
         assert_eq!(format!("{}", DataType::Integer), "INTEGER");
+        assert_eq!(format!("{}", DataType::Boolean), "BOOLEAN");
         assert_eq!(format!("{}", DataType::Varchar), "VARCHAR");
     }
 
@@ -238,6 +243,7 @@ mod tests {
     #[test]
     fn test_literal_display() {
         assert_eq!(format!("{}", Literal::Integer(42)), "42");
+        assert_eq!(format!("{}", Literal::Boolean(true)), "true");
         assert_eq!(
             format!("{}", Literal::String("hello".to_string())),
             "'hello'"
