@@ -109,6 +109,32 @@ fn test_insert_negative_integers() {
 }
 
 #[test]
+fn test_insert_unsigned_values() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE numbers (val UNSIGNED)");
+    db.execute_ok("INSERT INTO numbers VALUES (0), (18446744073709551615)");
+
+    let result = db.execute_ok("SELECT * FROM numbers WHERE val = 18446744073709551615");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::Unsigned(18446744073709551615));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_insert_negative_into_unsigned_rejected() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE numbers (val UNSIGNED)");
+    let err = db.execute_err("INSERT INTO numbers VALUES (-1)");
+    assert!(err.to_string().to_lowercase().contains("type mismatch"));
+}
+
+#[test]
 fn test_insert_strings_with_quotes() {
     let mut db = TestDb::new().unwrap();
 
@@ -170,7 +196,8 @@ fn test_insert_persistence() {
         let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
         executor.execute(stmt).unwrap();
-        let stmt = db2::sql::parse_sql("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+        let stmt =
+            db2::sql::parse_sql("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }

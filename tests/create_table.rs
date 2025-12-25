@@ -38,7 +38,9 @@ fn test_create_table_all_types() {
     let mut db = TestDb::new().unwrap();
 
     let result = db
-        .execute_ok("CREATE TABLE all_types (int_col INTEGER, bool_col BOOLEAN, str_col VARCHAR)");
+        .execute_ok(
+            "CREATE TABLE all_types (int_col INTEGER, uint_col UNSIGNED, bool_col BOOLEAN, str_col VARCHAR)",
+        );
 
     match result {
         ExecutionResult::CreateTable { table_name } => {
@@ -49,10 +51,11 @@ fn test_create_table_all_types() {
 
     let tables = db.list_tables();
     let schema = &tables[0].1;
-    assert_eq!(schema.column_count(), 3);
+    assert_eq!(schema.column_count(), 4);
     assert_eq!(schema.column(0).unwrap().data_type(), DataType::Integer);
-    assert_eq!(schema.column(1).unwrap().data_type(), DataType::Boolean);
-    assert_eq!(schema.column(2).unwrap().data_type(), DataType::String);
+    assert_eq!(schema.column(1).unwrap().data_type(), DataType::Unsigned);
+    assert_eq!(schema.column(2).unwrap().data_type(), DataType::Boolean);
+    assert_eq!(schema.column(3).unwrap().data_type(), DataType::String);
 }
 
 #[test]

@@ -135,9 +135,7 @@ impl Planner {
 
     /// Choose a scan strategy for a single table based on available indexes and predicates.
     pub fn plan_scan(&self, table: &str, filter: Option<&Expr>) -> ScanPlan {
-        let predicates = filter
-            .map(extract_indexable_predicates)
-            .unwrap_or_default();
+        let predicates = filter.map(extract_indexable_predicates).unwrap_or_default();
 
         let table_indexes: Vec<&IndexMetadata> = self
             .indexed_columns

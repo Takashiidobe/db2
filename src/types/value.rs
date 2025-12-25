@@ -1,10 +1,12 @@
+use std::cmp::Ordering;
 use std::fmt;
 
 /// Core data type for the database.
-/// Supports Integer (i64), Boolean, and String (VARCHAR) types.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// Supports Integer (i64), Unsigned (u64), Boolean, and String (VARCHAR) types.
+#[derive(Debug, Clone)]
 pub enum Value {
     Integer(i64),
+    Unsigned(u64),
     Boolean(bool),
     String(String),
 }
@@ -13,6 +15,11 @@ impl Value {
     /// Returns true if this value is an Integer
     pub fn is_integer(&self) -> bool {
         matches!(self, Value::Integer(_))
+    }
+
+    /// Returns true if this value is an Unsigned Integer
+    pub fn is_unsigned(&self) -> bool {
+        matches!(self, Value::Unsigned(_))
     }
 
     /// Returns true if this value is a Boolean
@@ -33,6 +40,14 @@ impl Value {
         }
     }
 
+    /// Returns the Unsigned value if this is an Unsigned Integer, None otherwise
+    pub fn as_unsigned(&self) -> Option<u64> {
+        match self {
+            Value::Unsigned(u) => Some(*u),
+            _ => None,
+        }
+    }
+
     /// Returns the Boolean value if this is a Boolean, None otherwise
     pub fn as_boolean(&self) -> Option<bool> {
         match self {
@@ -48,37 +63,87 @@ impl Value {
             _ => None,
         }
     }
+
+    fn kind(&self) -> ValueKind {
+        match self {
+            Value::Integer(_) | Value::Unsigned(_) => ValueKind::Numeric,
+            Value::Boolean(_) => ValueKind::Boolean,
+            Value::String(_) => ValueKind::String,
+        }
+    }
 }
 
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Value::Integer(i) => write!(f, "{}", i),
+            Value::Unsigned(u) => write!(f, "{}", u),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{}", s),
         }
     }
 }
 
+impl PartialEq for Value {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Value::Integer(a), Value::Integer(b)) => a == b,
+            (Value::Unsigned(a), Value::Unsigned(b)) => a == b,
+            (Value::Integer(a), Value::Unsigned(b)) | (Value::Unsigned(b), Value::Integer(a)) => {
+                *a >= 0 && (*a as u64) == *b
+            }
+            (Value::Boolean(a), Value::Boolean(b)) => a == b,
+            (Value::String(a), Value::String(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Value {}
+
 impl PartialOrd for Value {
-    fn partial_cmp(&self, other: &Self) -> Option<std::cmp::Ordering> {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
         Some(self.cmp(other))
     }
 }
 
 impl Ord for Value {
-    fn cmp(&self, other: &Self) -> std::cmp::Ordering {
+    fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
             (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
+            (Value::Unsigned(a), Value::Unsigned(b)) => a.cmp(b),
+            (Value::Integer(a), Value::Unsigned(b)) => {
+                if *a < 0 {
+                    Ordering::Less
+                } else {
+                    (*a as u64).cmp(b)
+                }
+            }
+            (Value::Unsigned(a), Value::Integer(b)) => {
+                if *b < 0 {
+                    Ordering::Greater
+                } else {
+                    a.cmp(&(*b as u64))
+                }
+            }
             (Value::Boolean(a), Value::Boolean(b)) => a.cmp(b),
             (Value::String(a), Value::String(b)) => a.cmp(b),
-            // Define ordering between different types: Integer < Boolean < String
-            (Value::Integer(_), Value::Boolean(_)) => std::cmp::Ordering::Less,
-            (Value::Boolean(_), Value::Integer(_)) => std::cmp::Ordering::Greater,
-            (Value::Integer(_), Value::String(_)) => std::cmp::Ordering::Less,
-            (Value::String(_), Value::Integer(_)) => std::cmp::Ordering::Greater,
-            (Value::Boolean(_), Value::String(_)) => std::cmp::Ordering::Less,
-            (Value::String(_), Value::Boolean(_)) => std::cmp::Ordering::Greater,
+            _ => match (self.kind(), other.kind()) {
+                (ValueKind::Numeric, ValueKind::Boolean) => Ordering::Less,
+                (ValueKind::Numeric, ValueKind::String) => Ordering::Less,
+                (ValueKind::Boolean, ValueKind::Numeric) => Ordering::Greater,
+                (ValueKind::Boolean, ValueKind::String) => Ordering::Less,
+                (ValueKind::String, ValueKind::Numeric) => Ordering::Greater,
+                (ValueKind::String, ValueKind::Boolean) => Ordering::Greater,
+                _ => Ordering::Equal,
+            },
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ValueKind {
+    Numeric,
+    Boolean,
+    String,
 }

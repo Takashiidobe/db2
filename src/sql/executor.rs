@@ -135,28 +135,87 @@ struct IndexEntry {
     name: String,
     key: IndexKey,
     column_indices: Vec<usize>,
+    column_types: Vec<DbDataType>,
     tree: BPlusTree<CompositeKey, RowId>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct CompositeKey {
-    values: Vec<i64>,
+    values: Vec<IndexValue>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+enum IndexValue {
+    Signed(i64),
+    Unsigned(u64),
 }
 
 impl CompositeKey {
-    fn new(values: Vec<i64>) -> Self {
+    fn new(values: Vec<IndexValue>) -> Self {
         Self { values }
     }
 
-    fn min_values(len: usize) -> Self {
+    fn min_values(types: &[DbDataType]) -> Self {
         Self {
-            values: vec![i64::MIN; len],
+            values: types.iter().map(IndexValue::min_value).collect(),
         }
     }
 
-    fn max_values(len: usize) -> Self {
+    fn max_values(types: &[DbDataType]) -> Self {
         Self {
-            values: vec![i64::MAX; len],
+            values: types.iter().map(IndexValue::max_value).collect(),
+        }
+    }
+}
+
+impl IndexValue {
+    fn min_value(data_type: &DbDataType) -> Self {
+        match data_type {
+            DbDataType::Integer => IndexValue::Signed(i64::MIN),
+            DbDataType::Unsigned => IndexValue::Unsigned(0),
+            _ => unreachable!("IndexValue only used for integer types"),
+        }
+    }
+
+    fn max_value(data_type: &DbDataType) -> Self {
+        match data_type {
+            DbDataType::Integer => IndexValue::Signed(i64::MAX),
+            DbDataType::Unsigned => IndexValue::Unsigned(u64::MAX),
+            _ => unreachable!("IndexValue only used for integer types"),
+        }
+    }
+
+    fn from_value(value: &Value) -> Option<Self> {
+        match value {
+            Value::Integer(i) => Some(IndexValue::Signed(*i)),
+            Value::Unsigned(u) => Some(IndexValue::Unsigned(*u)),
+            _ => None,
+        }
+    }
+
+    fn from_literal(lit: &Literal, data_type: &DbDataType) -> Option<Self> {
+        match (lit, data_type) {
+            (Literal::Integer(i), DbDataType::Integer) => {
+                (*i).try_into().ok().map(IndexValue::Signed)
+            }
+            (Literal::Integer(i), DbDataType::Unsigned) if *i >= 0 => {
+                (*i).try_into().ok().map(IndexValue::Unsigned)
+            }
+            _ => None,
+        }
+    }
+
+    fn saturating_sub_one(&self) -> Self {
+        match self {
+            IndexValue::Signed(v) => IndexValue::Signed(v.saturating_sub(1)),
+            IndexValue::Unsigned(v) => IndexValue::Unsigned(v.saturating_sub(1)),
+        }
+    }
+
+    fn saturating_add_one(&self) -> Self {
+        match self {
+            IndexValue::Signed(v) => IndexValue::Signed(v.saturating_add(1)),
+            IndexValue::Unsigned(v) => IndexValue::Unsigned(v.saturating_add(1)),
         }
     }
 }
@@ -264,6 +323,7 @@ impl Executor {
             .map(|col| {
                 let db_type = match col.data_type {
                     super::ast::DataType::Integer => DbDataType::Integer,
+                    super::ast::DataType::Unsigned => DbDataType::Unsigned,
                     super::ast::DataType::Boolean => DbDataType::Boolean,
                     super::ast::DataType::Varchar => DbDataType::String,
                 };
@@ -455,23 +515,7 @@ impl Executor {
             }
 
             if let Expr::Literal(ref lit) = expr {
-                let value = match lit {
-                    Literal::Integer(i) => Value::Integer(*i),
-                    Literal::Boolean(b) => Value::Boolean(*b),
-                    Literal::String(s) => Value::String(s.clone()),
-                };
-
-                if !column.data_type().matches(&value) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        format!(
-                            "Type mismatch in column '{}': expected {}, found {:?}",
-                            column.name(),
-                            column.data_type(),
-                            value
-                        ),
-                    ));
-                }
+                Self::literal_to_typed_value(lit, column.data_type())?;
             }
 
             assignments.push((idx, expr));
@@ -569,12 +613,9 @@ impl Executor {
 
             let values: Vec<Value> = row_values
                 .iter()
-                .map(|lit| match lit {
-                    Literal::Integer(i) => Value::Integer(*i),
-                    Literal::Boolean(b) => Value::Boolean(*b),
-                    Literal::String(s) => Value::String(s.clone()),
-                })
-                .collect();
+                .zip(table.schema().columns())
+                .map(|(lit, col)| Self::literal_to_typed_value(lit, col.data_type()))
+                .collect::<io::Result<_>>()?;
 
             let row_id = table.insert(&values)?;
 
@@ -583,7 +624,8 @@ impl Executor {
                 .iter_mut()
                 .filter(|idx| idx.key.table == stmt.table_name)
             {
-                let key = Self::build_composite_key(&values, &index.column_indices)?;
+                let key =
+                    Self::build_composite_key(&values, &index.column_indices, &index.column_types)?;
                 index.tree.insert(key, row_id);
             }
 
@@ -637,6 +679,7 @@ impl Executor {
 
         // Resolve and validate columns
         let mut column_indices = Vec::new();
+        let mut column_types = Vec::new();
         for col_name in &stmt.columns {
             let (idx, column) = schema.find_column(col_name).ok_or_else(|| {
                 io::Error::new(
@@ -648,14 +691,18 @@ impl Executor {
                 )
             })?;
 
-            if column.data_type() != DbDataType::Integer {
+            if !matches!(
+                column.data_type(),
+                DbDataType::Integer | DbDataType::Unsigned
+            ) {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "Only INTEGER columns can be indexed",
+                    "Only INTEGER or UNSIGNED columns can be indexed",
                 ));
             }
 
             column_indices.push(idx);
+            column_types.push(column.data_type());
         }
 
         // Create the index and populate it with existing data
@@ -664,7 +711,7 @@ impl Executor {
         // Scan the table and add all existing rows to the index
         let mut scan = TableScan::new(table);
         while let Some((row_id, row)) = scan.next()? {
-            let key = Self::build_composite_key(&row, &column_indices)?;
+            let key = Self::build_composite_key(&row, &column_indices, &column_types)?;
             index.insert(key, row_id);
         }
 
@@ -675,6 +722,7 @@ impl Executor {
                 columns: stmt.columns.clone(),
             },
             column_indices,
+            column_types,
             tree: index,
         };
 
@@ -923,8 +971,10 @@ impl Executor {
             join_plan.inner_table.clone(),
             right_schema.columns()[right_join_idx].name().to_string(),
         );
-        let right_join_is_integer =
-            right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
+        let right_join_is_integer = matches!(
+            right_schema.columns()[right_join_idx].data_type(),
+            DbDataType::Integer | DbDataType::Unsigned
+        );
         let use_right_index = inner_has_index
             && right_join_is_integer
             && self
@@ -977,41 +1027,36 @@ impl Executor {
             let mut matching_right_rows = Vec::new();
 
             if use_right_index {
-                if let Value::Integer(key) = left_key {
-                    // Look up matching row IDs via index first
-                    let mut matched_ids = Vec::new();
-                    if let Some(index) = self.find_index_on_first_column(&index_key.0, &index_key.1)
-                    {
-                        let len = index.key.columns.len();
-                        let start = {
-                            let mut vals = vec![i64::MIN; len];
-                            vals[0] = key;
-                            CompositeKey::new(vals)
-                        };
-                        let end = {
-                            let mut vals = vec![i64::MAX; len];
-                            vals[0] = key;
-                            CompositeKey::new(vals)
-                        };
+                // Look up matching row IDs via index first
+                let mut matched_ids = Vec::new();
+                if let Some(index) = self.find_index_on_first_column(&index_key.0, &index_key.1) {
+                    let coerced_key =
+                        Self::coerce_value_to_type(left_key.clone(), index.column_types[0])?;
+                    let Some(index_value) = IndexValue::from_value(&coerced_key) else {
+                        continue;
+                    };
+                    let mut start = CompositeKey::min_values(&index.column_types);
+                    let mut end = CompositeKey::max_values(&index.column_types);
+                    start.values[0] = index_value.clone();
+                    end.values[0] = index_value;
 
-                        for (_k, row_id) in index.tree.range_scan(&start, &end) {
-                            matched_ids.push(row_id);
-                        }
+                    for (_k, row_id) in index.tree.range_scan(&start, &end) {
+                        matched_ids.push(row_id);
                     }
+                }
 
-                    for row_id in matched_ids {
-                        let right_row = {
-                            let right_table_ref =
-                                self.tables.get_mut(&join_plan.inner_table).ok_or_else(|| {
-                                    io::Error::new(
-                                        io::ErrorKind::NotFound,
-                                        format!("Table '{}' does not exist", join_plan.inner_table),
-                                    )
-                                })?;
-                            right_table_ref.get(row_id)?
-                        };
-                        matching_right_rows.push(right_row);
-                    }
+                for row_id in matched_ids {
+                    let right_row = {
+                        let right_table_ref =
+                            self.tables.get_mut(&join_plan.inner_table).ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::NotFound,
+                                    format!("Table '{}' does not exist", join_plan.inner_table),
+                                )
+                            })?;
+                        right_table_ref.get(row_id)?
+                    };
+                    matching_right_rows.push(right_row);
                 }
             } else if let Some(ref right_rows) = right_rows_cache {
                 for right_row in right_rows {
@@ -1205,7 +1250,6 @@ impl Executor {
         let mut new_row = row.to_vec();
 
         for (idx, expr) in assignments {
-            let value = Self::evaluate_expr_static(expr, row, columns_meta)?;
             let column = schema.column(*idx).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -1213,22 +1257,68 @@ impl Executor {
                 )
             })?;
 
-            if !column.data_type().matches(&value) {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "Type mismatch in column '{}': expected {}, found {:?}",
-                        column.name(),
-                        column.data_type(),
-                        value
-                    ),
-                ));
-            }
+            let typed_value = match expr {
+                Expr::Literal(lit) => Self::literal_to_typed_value(lit, column.data_type())?,
+                _ => {
+                    let value = Self::evaluate_expr_static(expr, row, columns_meta)?;
+                    Self::coerce_value_to_type(value, column.data_type())?
+                }
+            };
 
-            new_row[*idx] = value;
+            new_row[*idx] = typed_value;
         }
 
         Ok(new_row)
+    }
+
+    fn literal_to_value(lit: &Literal) -> io::Result<Value> {
+        match lit {
+            Literal::Integer(i) => {
+                if *i < i64::MIN as i128 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Integer literal below supported range",
+                    ));
+                }
+
+                if *i < 0 {
+                    Ok(Value::Integer(*i as i64))
+                } else if *i <= i64::MAX as i128 {
+                    Ok(Value::Integer(*i as i64))
+                } else if *i <= u64::MAX as i128 {
+                    Ok(Value::Unsigned(*i as u64))
+                } else {
+                    Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Integer literal exceeds u64::MAX",
+                    ))
+                }
+            }
+            Literal::Boolean(b) => Ok(Value::Boolean(*b)),
+            Literal::String(s) => Ok(Value::String(s.clone())),
+        }
+    }
+
+    fn literal_to_typed_value(lit: &Literal, data_type: DbDataType) -> io::Result<Value> {
+        let value = Self::literal_to_value(lit)?;
+        Self::coerce_value_to_type(value, data_type)
+    }
+
+    fn coerce_value_to_type(value: Value, data_type: DbDataType) -> io::Result<Value> {
+        match (data_type, value) {
+            (DbDataType::Integer, Value::Integer(i)) => Ok(Value::Integer(i)),
+            (DbDataType::Integer, Value::Unsigned(u)) if u <= i64::MAX as u64 => {
+                Ok(Value::Integer(u as i64))
+            }
+            (DbDataType::Unsigned, Value::Unsigned(u)) => Ok(Value::Unsigned(u)),
+            (DbDataType::Unsigned, Value::Integer(i)) if i >= 0 => Ok(Value::Unsigned(i as u64)),
+            (DbDataType::Boolean, Value::Boolean(b)) => Ok(Value::Boolean(b)),
+            (DbDataType::String, Value::String(s)) => Ok(Value::String(s)),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Type mismatch: expected {}", data_type),
+            )),
+        }
     }
 
     /// Evaluate a predicate expression against a row (static version)
@@ -1277,14 +1367,7 @@ impl Executor {
     ) -> io::Result<Value> {
         match expr {
             Expr::Column(col_ref) => Self::resolve_column_value(row, columns, col_ref),
-            Expr::Literal(lit) => {
-                let val = match lit {
-                    Literal::Integer(i) => Value::Integer(*i),
-                    Literal::Boolean(b) => Value::Boolean(*b),
-                    Literal::String(s) => Value::String(s.clone()),
-                };
-                Ok(val)
-            }
+            Expr::Literal(lit) => Self::literal_to_value(lit),
             Expr::BinaryOp { .. } => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Binary operations cannot be directly evaluated as values",
@@ -1321,7 +1404,8 @@ impl Executor {
         {
             let mut tree = BPlusTree::new();
             for (row_id, row) in &rows {
-                let key = Self::build_composite_key(row, &index.column_indices)?;
+                let key =
+                    Self::build_composite_key(row, &index.column_indices, &index.column_types)?;
                 tree.insert(key, *row_id);
             }
             index.tree = tree;
@@ -1443,15 +1527,16 @@ impl Executor {
         col_ref: &ColumnRef,
     ) -> io::Result<usize> {
         if let Some(ref table) = col_ref.table
-            && table != table_name {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    format!(
-                        "Column '{}' does not belong to table '{}'",
-                        col_ref.column, table_name
-                    ),
-                ));
-            }
+            && table != table_name
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Column '{}' does not belong to table '{}'",
+                    col_ref.column, table_name
+                ),
+            ));
+        }
 
         schema
             .find_column(&col_ref.column)
@@ -1467,18 +1552,37 @@ impl Executor {
             })
     }
 
-    fn build_composite_key(row: &[Value], column_indices: &[usize]) -> io::Result<CompositeKey> {
+    fn build_composite_key(
+        row: &[Value],
+        column_indices: &[usize],
+        column_types: &[DbDataType],
+    ) -> io::Result<CompositeKey> {
         let mut values = Vec::with_capacity(column_indices.len());
-        for &idx in column_indices {
-            match row.get(idx) {
-                Some(Value::Integer(i)) => values.push(*i),
+        for (&idx, data_type) in column_indices.iter().zip(column_types.iter()) {
+            let value = row.get(idx).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column index {} out of bounds for row", idx),
+                )
+            })?;
+
+            let index_value = match (data_type, value) {
+                (DbDataType::Integer, Value::Integer(i)) => IndexValue::Signed(*i),
+                (DbDataType::Integer, Value::Unsigned(u)) if *u <= i64::MAX as u64 => {
+                    IndexValue::Signed(*u as i64)
+                }
+                (DbDataType::Unsigned, Value::Unsigned(u)) => IndexValue::Unsigned(*u),
+                (DbDataType::Unsigned, Value::Integer(i)) if *i >= 0 => {
+                    IndexValue::Unsigned(*i as u64)
+                }
                 _ => {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
-                        "Indexing currently only supports INTEGER columns",
+                        "Indexing currently only supports INTEGER or UNSIGNED columns",
                     ));
                 }
-            }
+            };
+            values.push(index_value);
         }
         Ok(CompositeKey::new(values))
     }
@@ -1503,9 +1607,8 @@ impl Executor {
             return Ok(Vec::new());
         }
 
-        let len = index.key.columns.len();
-        let mut start = CompositeKey::min_values(len);
-        let mut end = CompositeKey::max_values(len);
+        let mut start = CompositeKey::min_values(&index.column_types);
+        let mut end = CompositeKey::max_values(&index.column_types);
         let mut eq_prefix = true;
 
         for (i, col_name) in index.key.columns.iter().enumerate() {
@@ -1514,7 +1617,7 @@ impl Executor {
                 break;
             };
 
-            let Literal::Integer(val) = lit else {
+            let Some(value) = IndexValue::from_literal(lit, &index.column_types[i]) else {
                 return Ok(Vec::new());
             };
 
@@ -1524,37 +1627,38 @@ impl Executor {
 
             match op {
                 BinaryOp::Eq => {
-                    start.values[i] = *val;
-                    end.values[i] = *val;
+                    start.values[i] = value.clone();
+                    end.values[i] = value;
                 }
                 BinaryOp::Lt => {
-                    end.values[i] = val.saturating_sub(1);
+                    end.values[i] = value.saturating_sub_one();
                     eq_prefix = false;
                 }
                 BinaryOp::LtEq => {
-                    end.values[i] = *val;
+                    end.values[i] = value;
                     eq_prefix = false;
                 }
                 BinaryOp::Gt => {
-                    start.values[i] = val.saturating_add(1);
+                    start.values[i] = value.saturating_add_one();
                     eq_prefix = false;
                 }
                 BinaryOp::GtEq => {
-                    start.values[i] = *val;
+                    start.values[i] = value;
                     eq_prefix = false;
                 }
                 BinaryOp::NotEq => {
                     if i == 0 {
                         let mut ranges = Vec::new();
-                        if *val > i64::MIN {
+                        if value > IndexValue::min_value(&index.column_types[0]) {
                             let mut left_end = end.clone();
-                            left_end.values[0] = val.saturating_sub(1);
+                            left_end.values[0] = value.saturating_sub_one();
                             ranges.push((start.clone(), left_end));
                         }
-                        if *val < i64::MAX {
+                        if value < IndexValue::max_value(&index.column_types[0]) {
                             let mut right_start = start.clone();
-                            right_start.values[0] = val.saturating_add(1);
-                            ranges.push((right_start, CompositeKey::max_values(len)));
+                            right_start.values[0] = value.saturating_add_one();
+                            ranges
+                                .push((right_start, CompositeKey::max_values(&index.column_types)));
                         }
                         return Ok(ranges);
                     } else {
@@ -1613,15 +1717,22 @@ impl Executor {
             let schema = table_ref.schema().clone();
 
             let mut column_indices = Vec::new();
+            let mut column_types = Vec::new();
             for col in &columns {
                 if let Some((idx, column)) = schema.find_column(col) {
-                    if column.data_type() != DbDataType::Integer {
+                    if !matches!(
+                        column.data_type(),
+                        DbDataType::Integer | DbDataType::Unsigned
+                    ) {
                         column_indices.clear();
+                        column_types.clear();
                         break;
                     }
                     column_indices.push(idx);
+                    column_types.push(column.data_type());
                 } else {
                     column_indices.clear();
+                    column_types.clear();
                     break;
                 }
             }
@@ -1632,7 +1743,7 @@ impl Executor {
             let mut tree = BPlusTree::new();
             let mut scan = TableScan::new(table_ref);
             while let Some((row_id, row)) = scan.next()? {
-                let key = Self::build_composite_key(&row, &column_indices)?;
+                let key = Self::build_composite_key(&row, &column_indices, &column_types)?;
                 tree.insert(key, row_id);
             }
 
@@ -1643,6 +1754,7 @@ impl Executor {
                     columns: columns.clone(),
                 },
                 column_indices,
+                column_types,
                 tree,
             });
         }

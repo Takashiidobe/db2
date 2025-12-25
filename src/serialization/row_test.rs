@@ -129,6 +129,24 @@ mod tests {
     }
 
     #[test]
+    fn test_unsigned_round_trip() {
+        let schema = Schema::new(vec![
+            Column::new("id", DataType::Unsigned),
+            Column::new("note", DataType::String),
+        ]);
+
+        let row = vec![
+            Value::Unsigned(u64::MAX),
+            Value::String("max value".to_string()),
+        ];
+
+        let bytes = RowSerializer::serialize(&row, Some(&schema)).unwrap();
+        let deserialized = RowSerializer::deserialize(&bytes, &schema).unwrap();
+
+        assert_eq!(row, deserialized);
+    }
+
+    #[test]
     fn test_schema_validation_on_serialize() {
         let schema = create_test_schema();
 

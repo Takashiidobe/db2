@@ -9,6 +9,7 @@ enum TypeTag {
     Integer = 0,
     String = 1,
     Boolean = 2,
+    Unsigned = 3,
 }
 
 impl TypeTag {
@@ -17,6 +18,7 @@ impl TypeTag {
             0 => Ok(TypeTag::Integer),
             1 => Ok(TypeTag::String),
             2 => Ok(TypeTag::Boolean),
+            3 => Ok(TypeTag::Unsigned),
             _ => Err(SerializationError::InvalidTypeTag(value)),
         }
     }
@@ -26,6 +28,7 @@ impl TypeTag {
             Value::Integer(_) => TypeTag::Integer,
             Value::Boolean(_) => TypeTag::Boolean,
             Value::String(_) => TypeTag::String,
+            Value::Unsigned(_) => TypeTag::Unsigned,
         }
     }
 }
@@ -66,9 +69,10 @@ impl std::error::Error for SerializationError {}
 /// [1 byte: type_tag (0=Integer, 1=String, 2=Boolean)]
 /// [values...]
 ///
-/// For Integer: [8 bytes: i64] (repeated value_count times)
-/// For Boolean: [1 byte: 0 or 1]
-/// For String:  [4 bytes: length (u32)][length bytes: UTF-8 data] (repeated value_count times)
+/// For Integer:  [8 bytes: i64] (repeated value_count times)
+/// For Unsigned: [8 bytes: u64]
+/// For Boolean:  [1 byte: 0 or 1]
+/// For String:   [4 bytes: length (u32)][length bytes: UTF-8 data] (repeated value_count times)
 /// ```
 pub struct ColumnSerializer;
 
@@ -104,6 +108,7 @@ impl ColumnSerializer {
 
             match value {
                 Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
+                Value::Unsigned(u) => codec::write_u64(&mut buf, *u)?,
                 Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
                 Value::String(s) => codec::write_string(&mut buf, s)?,
             }
@@ -134,6 +139,10 @@ impl ColumnSerializer {
                 TypeTag::Integer => {
                     let i = codec::read_i64(&mut cursor)?;
                     Value::Integer(i)
+                }
+                TypeTag::Unsigned => {
+                    let u = codec::read_u64(&mut cursor)?;
+                    Value::Unsigned(u)
                 }
                 TypeTag::String => {
                     let s = codec::read_string(&mut cursor)?;

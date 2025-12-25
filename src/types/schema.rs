@@ -4,6 +4,7 @@ use super::Value;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DataType {
     Integer,
+    Unsigned,
     Boolean,
     String,
 }
@@ -11,12 +12,15 @@ pub enum DataType {
 impl DataType {
     /// Check if a value matches this data type
     pub fn matches(&self, value: &Value) -> bool {
-        matches!(
-            (self, value),
-            (DataType::Integer, Value::Integer(_))
-                | (DataType::Boolean, Value::Boolean(_))
-                | (DataType::String, Value::String(_))
-        )
+        match (self, value) {
+            (DataType::Integer, Value::Integer(_)) => true,
+            (DataType::Integer, Value::Unsigned(u)) => *u <= i64::MAX as u64,
+            (DataType::Unsigned, Value::Unsigned(_)) => true,
+            (DataType::Unsigned, Value::Integer(i)) => *i >= 0,
+            (DataType::Boolean, Value::Boolean(_)) => true,
+            (DataType::String, Value::String(_)) => true,
+            _ => false,
+        }
     }
 }
 
@@ -24,6 +28,7 @@ impl std::fmt::Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
+            DataType::Unsigned => write!(f, "UNSIGNED"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::String => write!(f, "VARCHAR"),
         }

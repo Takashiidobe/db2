@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
-    DropIndexStmt, DropTableStmt, Expr, FromClause, InsertStmt, Literal, SelectColumn,
-    SelectStmt, Statement, UpdateStmt,
+    DropIndexStmt, DropTableStmt, Expr, FromClause, InsertStmt, Literal, SelectColumn, SelectStmt,
+    Statement, UpdateStmt,
 };
 
 /// Parse errors
@@ -39,6 +39,7 @@ pub(crate) enum Token {
     Integer,
     Varchar,
     Boolean,
+    Unsigned,
     True,
     False,
     Select,
@@ -67,7 +68,7 @@ pub(crate) enum Token {
 
     // Literals
     Identifier(String),
-    IntegerLiteral(i64),
+    IntegerLiteral(i128),
     StringLiteral(String),
 
     // End of input
@@ -86,6 +87,7 @@ impl std::fmt::Display for Token {
             Token::Integer => write!(f, "INTEGER"),
             Token::Varchar => write!(f, "VARCHAR"),
             Token::Boolean => write!(f, "BOOLEAN"),
+            Token::Unsigned => write!(f, "UNSIGNED"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -162,7 +164,7 @@ impl Tokenizer {
         result
     }
 
-    fn read_number(&mut self) -> Result<i64, ParseError> {
+    fn read_number(&mut self) -> Result<i128, ParseError> {
         let mut result = String::new();
         let mut is_negative = false;
 
@@ -184,7 +186,7 @@ impl Tokenizer {
             return Err(ParseError::InvalidSyntax("Invalid number".to_string()));
         }
 
-        let num: i64 = result
+        let num: i128 = result
             .parse()
             .map_err(|_| ParseError::InvalidSyntax("Invalid number".to_string()))?;
 
@@ -292,6 +294,7 @@ impl Tokenizer {
                     "INTO" => Token::Into,
                     "VALUES" => Token::Values,
                     "INTEGER" => Token::Integer,
+                    "UNSIGNED" => Token::Unsigned,
                     "VARCHAR" => Token::Varchar,
                     "BOOLEAN" | "BOOL" => Token::Boolean,
                     "SELECT" => Token::Select,
@@ -375,6 +378,10 @@ impl Parser {
                 self.advance();
                 Ok(DataType::Integer)
             }
+            Token::Unsigned => {
+                self.advance();
+                Ok(DataType::Unsigned)
+            }
             Token::Varchar => {
                 self.advance();
                 Ok(DataType::Varchar)
@@ -384,7 +391,7 @@ impl Parser {
                 Ok(DataType::Boolean)
             }
             _ => Err(ParseError::UnexpectedToken {
-                expected: "data type (INTEGER, BOOLEAN, or VARCHAR)".to_string(),
+                expected: "data type (INTEGER, UNSIGNED, BOOLEAN, or VARCHAR)".to_string(),
                 found: format!("{}", token),
             }),
         }

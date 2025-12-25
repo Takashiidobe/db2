@@ -35,6 +35,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_create_table_unsigned() {
+        let sql = "CREATE TABLE metrics (id UNSIGNED, name VARCHAR)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::CreateTable(create) => {
+                assert_eq!(create.columns[0].data_type, DataType::Unsigned);
+                assert_eq!(create.columns[1].data_type, DataType::Varchar);
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_case_insensitive() {
         let sql = "create table Users (ID integer, Name varchar)";
         let stmt = parse_sql(sql).unwrap();
@@ -78,6 +92,22 @@ mod tests {
                 assert_eq!(insert.values[0][1], Literal::String("hello".to_string()));
                 assert_eq!(insert.values[0][2], Literal::Integer(-100));
                 assert_eq!(insert.values[0][3], Literal::String("world".to_string()));
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_large_unsigned_literal() {
+        let sql = "INSERT INTO test VALUES (18446744073709551615)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Insert(insert) => {
+                assert_eq!(
+                    insert.values[0][0],
+                    Literal::Integer(18446744073709551615i128)
+                );
             }
             _ => panic!("Expected Insert statement"),
         }

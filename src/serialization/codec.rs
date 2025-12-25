@@ -48,6 +48,18 @@ pub fn read_i64<R: Read>(reader: &mut R) -> io::Result<i64> {
     Ok(i64::from_le_bytes(buf))
 }
 
+/// Write a u64 (8 bytes, little-endian)
+pub fn write_u64<W: Write>(writer: &mut W, value: u64) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+/// Read a u64 (8 bytes, little-endian)
+pub fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
+    let mut buf = [0u8; 8];
+    reader.read_exact(&mut buf)?;
+    Ok(u64::from_le_bytes(buf))
+}
+
 /// Write a string (4 bytes length + UTF-8 data)
 pub fn write_string<W: Write>(writer: &mut W, value: &str) -> io::Result<()> {
     let bytes = value.as_bytes();

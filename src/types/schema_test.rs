@@ -5,6 +5,10 @@ mod tests {
     #[test]
     fn test_data_type_matches() {
         assert!(DataType::Integer.matches(&Value::Integer(42)));
+        assert!(DataType::Integer.matches(&Value::Unsigned(42)));
+        assert!(DataType::Unsigned.matches(&Value::Unsigned(5)));
+        assert!(DataType::Unsigned.matches(&Value::Integer(0)));
+        assert!(!DataType::Unsigned.matches(&Value::Integer(-1)));
         assert!(DataType::Boolean.matches(&Value::Boolean(true)));
         assert!(!DataType::Integer.matches(&Value::String("hello".to_string())));
         assert!(!DataType::Boolean.matches(&Value::Integer(0)));
@@ -62,6 +66,13 @@ mod tests {
 
         let row = vec![Value::Integer(1), Value::String("Alice".to_string())];
         assert!(schema.validate_row(&row).is_ok());
+
+        let unsigned_schema = Schema::new(vec![
+            Column::new("id", DataType::Unsigned),
+            Column::new("name", DataType::String),
+        ]);
+        let row = vec![Value::Unsigned(1), Value::String("Bob".to_string())];
+        assert!(unsigned_schema.validate_row(&row).is_ok());
     }
 
     #[test]

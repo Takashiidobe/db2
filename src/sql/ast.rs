@@ -2,6 +2,7 @@
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum DataType {
     Integer,
+    Unsigned,
     Boolean,
     Varchar,
 }
@@ -10,6 +11,7 @@ impl std::fmt::Display for DataType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
+            DataType::Unsigned => write!(f, "UNSIGNED"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::Varchar => write!(f, "VARCHAR"),
         }
@@ -51,7 +53,7 @@ impl CreateTableStmt {
 /// Literal value in SQL
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Literal {
-    Integer(i64),
+    Integer(i128),
     Boolean(bool),
     String(String),
 }

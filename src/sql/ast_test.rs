@@ -7,6 +7,7 @@ mod tests {
     #[test]
     fn test_data_type_display() {
         assert_eq!(format!("{}", DataType::Integer), "INTEGER");
+        assert_eq!(format!("{}", DataType::Unsigned), "UNSIGNED");
         assert_eq!(format!("{}", DataType::Boolean), "BOOLEAN");
         assert_eq!(format!("{}", DataType::Varchar), "VARCHAR");
     }

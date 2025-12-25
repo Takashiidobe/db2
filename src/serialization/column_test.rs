@@ -14,6 +14,15 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_unsigned() {
+        let values = vec![Value::Unsigned(1), Value::Unsigned(2)];
+        let bytes = ColumnSerializer::serialize(&values).unwrap();
+
+        // 4 bytes (count=2) + 1 byte (type) + 2 * 8 bytes
+        assert_eq!(bytes.len(), 4 + 1 + 2 * 8);
+    }
+
+    #[test]
     fn test_serialize_strings() {
         let values = vec![
             Value::String("hello".to_string()),
@@ -43,6 +52,20 @@ mod tests {
             Value::Integer(0),
             Value::Integer(i64::MAX),
             Value::Integer(i64::MIN),
+        ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_round_trip_unsigned() {
+        let original = vec![
+            Value::Unsigned(0),
+            Value::Unsigned(42),
+            Value::Unsigned(u64::MAX),
         ];
 
         let bytes = ColumnSerializer::serialize(&original).unwrap();

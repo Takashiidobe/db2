@@ -6,11 +6,21 @@ mod tests {
     fn test_integer_creation() {
         let val = Value::Integer(42);
         assert!(val.is_integer());
+        assert!(!val.is_unsigned());
         assert!(!val.is_boolean());
         assert!(!val.is_string());
         assert_eq!(val.as_integer(), Some(42));
         assert_eq!(val.as_boolean(), None);
         assert_eq!(val.as_string(), None);
+    }
+
+    #[test]
+    fn test_unsigned_creation() {
+        let val = Value::Unsigned(42);
+        assert!(val.is_unsigned());
+        assert!(!val.is_integer());
+        assert_eq!(val.as_unsigned(), Some(42));
+        assert_eq!(val.as_integer(), None);
     }
 
     #[test]
@@ -35,6 +45,7 @@ mod tests {
     #[test]
     fn test_display() {
         assert_eq!(format!("{}", Value::Integer(42)), "42");
+        assert_eq!(format!("{}", Value::Unsigned(42)), "42");
         assert_eq!(format!("{}", Value::Boolean(false)), "false");
         assert_eq!(format!("{}", Value::String("hello".to_string())), "hello");
     }
@@ -43,6 +54,8 @@ mod tests {
     fn test_equality() {
         assert_eq!(Value::Integer(42), Value::Integer(42));
         assert_ne!(Value::Integer(42), Value::Integer(43));
+        assert_eq!(Value::Integer(5), Value::Unsigned(5));
+        assert_ne!(Value::Integer(-1), Value::Unsigned(1));
         assert_eq!(
             Value::String("hello".to_string()),
             Value::String("hello".to_string())
@@ -61,11 +74,14 @@ mod tests {
         let a = Value::Integer(10);
         let b = Value::Integer(20);
         let c = Value::Integer(10);
+        let u = Value::Unsigned(15);
 
         assert!(a < b);
         assert!(b > a);
         assert!(a <= c);
         assert!(a >= c);
+        assert!(u > a);
+        assert!(Value::Unsigned(0) > Value::Integer(-1));
     }
 
     #[test]
@@ -111,6 +127,9 @@ mod tests {
     fn test_debug() {
         let val = Value::Integer(42);
         assert_eq!(format!("{:?}", val), "Integer(42)");
+
+        let val = Value::Unsigned(7);
+        assert_eq!(format!("{:?}", val), "Unsigned(7)");
 
         let val = Value::String("test".to_string());
         assert_eq!(format!("{:?}", val), "String(\"test\")");

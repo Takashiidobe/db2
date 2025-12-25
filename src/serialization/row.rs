@@ -39,7 +39,8 @@ impl std::error::Error for RowSerializationError {}
 ///
 /// Value serialization:
 ///   Integer: [8 bytes: i64]
-///   Boolean: [1 byte: 0 or 1]
+///   Unsigned: [8 bytes: u64]
+///   Boolean:  [1 byte: 0 or 1]
 ///   String:  [4 bytes: length (u32)][length bytes: UTF-8 data]
 /// ```
 pub struct RowSerializer;
@@ -79,6 +80,7 @@ impl RowSerializer {
         for value in row {
             match value {
                 Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
+                Value::Unsigned(u) => codec::write_u64(&mut buf, *u)?,
                 Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
                 Value::String(s) => codec::write_string(&mut buf, s)?,
             }
@@ -121,6 +123,10 @@ impl RowSerializer {
                 crate::types::DataType::Integer => {
                     let i = codec::read_i64(&mut cursor)?;
                     Value::Integer(i)
+                }
+                crate::types::DataType::Unsigned => {
+                    let u = codec::read_u64(&mut cursor)?;
+                    Value::Unsigned(u)
                 }
                 crate::types::DataType::Boolean => {
                     let b = codec::read_u8(&mut cursor)?;

@@ -272,6 +272,25 @@ fn test_select_index_range() {
     }
 }
 
+#[test]
+fn test_select_unsigned_index() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE numbers (val UNSIGNED)");
+    db.execute_ok("CREATE INDEX idx_val_unsigned ON numbers(val)");
+    db.execute_ok("INSERT INTO numbers VALUES (1), (5), (18446744073709551615)");
+
+    let result = db.execute_ok("SELECT * FROM numbers WHERE val = 18446744073709551615");
+    match &result {
+        ExecutionResult::Select { rows, plan, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::Unsigned(18446744073709551615));
+            assert!(plan.iter().any(|p| p.contains("Index scan")));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
 // JOIN tests
 
 #[test]
