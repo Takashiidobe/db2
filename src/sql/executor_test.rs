@@ -1,5 +1,6 @@
 mod tests {
     use crate::{
+        serialization::RowMetadata,
         sql::{ExecutionResult, Executor, IndexType, TransactionCommand, parser::parse_sql},
         table::RowId,
         types::Value,
@@ -1005,6 +1006,42 @@ mod tests {
 
         executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
         assert!(executor.current_snapshot().is_none());
+    }
+
+    #[test]
+    fn test_snapshot_visibility_skips_future_xmin() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+
+        let snapshot = executor.current_snapshot().expect("snapshot");
+        let table = executor.get_table("users").expect("table");
+        table
+            .insert_with_metadata(
+                &[
+                    Value::Integer(1),
+                    Value::String("Invisible".to_string()),
+                ],
+                RowMetadata {
+                    xmin: snapshot.xmax,
+                    xmax: 0,
+                },
+            )
+            .unwrap();
+
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users WHERE id = 1").unwrap())
+            .unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert!(rows.is_empty());
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
     }
 
     #[test]

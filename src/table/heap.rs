@@ -1,4 +1,4 @@
-use crate::serialization::RowSerializer;
+use crate::serialization::{RowMetadata, RowSerializer};
 use crate::storage::{BufferPool, PageError, PageId, PageType, SlotId};
 use crate::types::{Schema, Value};
 use std::io;
@@ -146,6 +146,14 @@ impl HeapTable {
     /// - Serialization fails
     /// - Page operations fail
     pub fn insert(&mut self, row: &[Value]) -> io::Result<RowId> {
+        self.insert_with_metadata(row, RowMetadata::default())
+    }
+
+    pub fn insert_with_metadata(
+        &mut self,
+        row: &[Value],
+        metadata: RowMetadata,
+    ) -> io::Result<RowId> {
         // Validate row against schema
         self.schema.validate_row(row).map_err(|e| {
             io::Error::new(
@@ -155,7 +163,7 @@ impl HeapTable {
         })?;
 
         // Serialize the row
-        let row_data = RowSerializer::serialize(row, Some(&self.schema))
+        let row_data = RowSerializer::serialize_with_metadata(row, Some(&self.schema), metadata)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         // Try to insert into the last page first
@@ -198,6 +206,11 @@ impl HeapTable {
     /// - Row doesn't exist
     /// - Deserialization fails
     pub fn get(&mut self, row_id: RowId) -> io::Result<Vec<Value>> {
+        let (_, values) = self.get_with_metadata(row_id)?;
+        Ok(values)
+    }
+
+    pub fn get_with_metadata(&mut self, row_id: RowId) -> io::Result<(RowMetadata, Vec<Value>)> {
         let page = self.buffer_pool.fetch_page(row_id.page_id)?;
 
         let row_data = page.get_row(row_id.slot_id).ok_or_else(|| {
@@ -207,12 +220,12 @@ impl HeapTable {
             )
         })?;
 
-        let values = RowSerializer::deserialize(row_data, &self.schema)
+        let (metadata, values) = RowSerializer::deserialize_with_metadata(row_data, &self.schema)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
         self.buffer_pool.unpin_page(row_id.page_id, false);
 
-        Ok(values)
+        Ok((metadata, values))
     }
 
     /// Delete a row from the table

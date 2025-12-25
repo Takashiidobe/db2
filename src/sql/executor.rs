@@ -7,6 +7,7 @@ use crate::index::{BPlusTree, HashIndex};
 use crate::optimizer::planner::{
     FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
 };
+use crate::serialization::RowMetadata;
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use crate::wal::{WalFile, WalRecord, TxnId};
@@ -488,6 +489,8 @@ impl Executor {
             ScanPlan::SeqScan => None,
         };
 
+        let snapshot = self.current_snapshot();
+
         // Collect target rows
         let rows_to_delete: Vec<(RowId, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
@@ -501,8 +504,13 @@ impl Executor {
 
             if let Some(row_ids) = row_ids {
                 for row_id in row_ids {
-                    let row = match table.get(row_id) {
-                        Ok(row) => row,
+                    let row = match table.get_with_metadata(row_id) {
+                        Ok((meta, row)) => {
+                            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                                continue;
+                            }
+                            row
+                        }
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
                     };
@@ -517,7 +525,10 @@ impl Executor {
                 }
             } else {
                 let mut scan = TableScan::new(table);
-                while let Some((row_id, row)) = scan.next()? {
+                while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
+                    if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                        continue;
+                    }
                     if let Some(ref expr) = where_clause
                         && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
                     {
@@ -647,6 +658,7 @@ impl Executor {
             ScanPlan::SeqScan => None,
         };
 
+        let snapshot = self.current_snapshot();
         let mut rows_updated = 0;
         let pending_updates: Vec<(RowId, Vec<Value>, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
@@ -660,8 +672,13 @@ impl Executor {
 
             if let Some(row_ids) = row_ids {
                 for row_id in row_ids {
-                    let row = match table.get(row_id) {
-                        Ok(row) => row,
+                    let row = match table.get_with_metadata(row_id) {
+                        Ok((meta, row)) => {
+                            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                                continue;
+                            }
+                            row
+                        }
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
                     };
@@ -678,7 +695,10 @@ impl Executor {
                 }
             } else {
                 let mut scan = TableScan::new(table);
-                while let Some((row_id, row)) = scan.next()? {
+                while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
+                    if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                        continue;
+                    }
                     if let Some(ref expr) = where_clause
                         && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
                     {
@@ -1072,6 +1092,8 @@ impl Executor {
         let (column_indices, column_names) =
             Self::build_projection(&columns_meta, &columns, false)?;
 
+        let snapshot = self.current_snapshot();
+
         let row_ids = match scan_plan {
             ScanPlan::IndexScan {
                 index_columns,
@@ -1094,7 +1116,10 @@ impl Executor {
         if let Some(row_ids) = row_ids {
             // Index scan: fetch specific rows
             for row_id in row_ids {
-                let row = table.get(row_id)?;
+                let (meta, row) = table.get_with_metadata(row_id)?;
+                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    continue;
+                }
 
                 if let Some(ref where_expr) = where_clause
                     && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
@@ -1112,7 +1137,10 @@ impl Executor {
             // Table scan: scan all rows and filter
             let mut scan = TableScan::new(table);
 
-            while let Some((_row_id, row)) = scan.next()? {
+            while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    continue;
+                }
                 // Apply WHERE clause filter if present
                 if let Some(ref where_expr) = where_clause
                     && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
@@ -1220,6 +1248,8 @@ impl Executor {
         column_names: Vec<String>,
         inner_has_index: bool,
     ) -> io::Result<ExecutionResult> {
+        let snapshot = self.current_snapshot();
+
         // Preload left rows (outer loop)
         let left_rows = {
             let mut rows = Vec::new();
@@ -1230,7 +1260,10 @@ impl Executor {
                 )
             })?;
             let mut scan = TableScan::new(left_table_ref);
-            while let Some((_row_id, row)) = scan.next()? {
+            while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    continue;
+                }
                 rows.push(row);
             }
             rows
@@ -1283,7 +1316,10 @@ impl Executor {
                 )
             })?;
             let mut scan = TableScan::new(right_table_ref);
-            while let Some((_row_id, row)) = scan.next()? {
+            while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    continue;
+                }
                 rows.push(row);
             }
             Some(rows)
@@ -1317,7 +1353,11 @@ impl Executor {
                                     format!("Table '{}' does not exist", join_plan.inner_table),
                                 )
                             })?;
-                        right_table_ref.get(row_id)?
+                        let (meta, row) = right_table_ref.get_with_metadata(row_id)?;
+                        if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                            continue;
+                        }
+                        row
                     };
                     matching_right_rows.push(right_row);
                 }
@@ -1443,6 +1483,7 @@ impl Executor {
         table_name: &str,
         join_idx: usize,
     ) -> io::Result<Vec<(Value, Vec<Value>)>> {
+        let snapshot = self.current_snapshot();
         let table_ref = self.tables.get_mut(table_name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1452,7 +1493,10 @@ impl Executor {
 
         let mut scan = TableScan::new(table_ref);
         let mut rows = Vec::new();
-        while let Some((_row_id, row)) = scan.next()? {
+        while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
+            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                continue;
+            }
             if join_idx >= row.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
@@ -2148,6 +2192,28 @@ impl Executor {
             Some(table) => format!("{}.{}", table, col_ref.column),
             None => col_ref.column.clone(),
         }
+    }
+
+    fn is_visible_for_snapshot(meta: &RowMetadata, snapshot: Option<&Snapshot>) -> bool {
+        let Some(snapshot) = snapshot else {
+            return true;
+        };
+
+        if meta.xmin != 0 {
+            if meta.xmin >= snapshot.xmax || snapshot.active.contains(&meta.xmin) {
+                return false;
+            }
+        }
+
+        if meta.xmax == 0 {
+            return true;
+        }
+
+        if meta.xmax >= snapshot.xmax || snapshot.active.contains(&meta.xmax) {
+            return true;
+        }
+
+        false
     }
 
     /// Flush all tables

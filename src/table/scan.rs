@@ -1,5 +1,5 @@
 use super::heap::{HeapTable, RowId};
-use crate::serialization::RowSerializer;
+use crate::serialization::{RowMetadata, RowSerializer};
 use crate::storage::PageId;
 use crate::types::Value;
 use std::io;
@@ -30,6 +30,13 @@ impl<'a> TableScan<'a> {
     ///
     /// Returns (RowId, Vec<Value>) for each row, or None when done
     pub fn next(&mut self) -> io::Result<Option<(RowId, Vec<Value>)>> {
+        if let Some((row_id, _meta, values)) = self.next_with_metadata()? {
+            return Ok(Some((row_id, values)));
+        }
+        Ok(None)
+    }
+
+    pub fn next_with_metadata(&mut self) -> io::Result<Option<(RowId, RowMetadata, Vec<Value>)>> {
         if self.finished {
             return Ok(None);
         }
@@ -73,13 +80,14 @@ impl<'a> TableScan<'a> {
                     .unpin_page(self.current_page_id, false);
 
                 // Deserialize the row
-                let values = RowSerializer::deserialize(&row_data, self.table.schema())
+                let (metadata, values) =
+                    RowSerializer::deserialize_with_metadata(&row_data, self.table.schema())
                     .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
                 // Move to next slot
                 self.current_slot_id += 1;
 
-                return Ok(Some((row_id, values)));
+                return Ok(Some((row_id, metadata, values)));
             } else {
                 // No more rows on this page, move to next page
                 self.table
