@@ -198,13 +198,53 @@ impl Expr {
     }
 }
 
+/// Aggregate function
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum AggregateFunc {
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+}
+
+/// Aggregate target
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AggregateTarget {
+    All,
+    Column(ColumnRef),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AggregateExpr {
+    pub func: AggregateFunc,
+    pub target: AggregateTarget,
+}
+
+impl AggregateExpr {
+    pub fn new(func: AggregateFunc, target: AggregateTarget) -> Self {
+        Self { func, target }
+    }
+}
+
+/// Column selection in SELECT
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SelectItem {
+    /// All columns (*)
+    All,
+    /// Specific column
+    Column(ColumnRef),
+    /// Aggregate expression
+    Aggregate(AggregateExpr),
+}
+
 /// Column selection in SELECT
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SelectColumn {
     /// All columns (*)
     All,
-    /// Specific columns
-    Columns(Vec<ColumnRef>),
+    /// Specific columns or aggregates
+    Items(Vec<SelectItem>),
 }
 
 /// FROM clause source
@@ -237,6 +277,8 @@ pub struct SelectStmt {
     pub columns: SelectColumn,
     pub from: FromClause,
     pub where_clause: Option<Expr>,
+    pub group_by: Vec<ColumnRef>,
+    pub distinct: bool,
     pub order_by: Vec<OrderByExpr>,
     pub limit: Option<usize>,
     pub offset: Option<usize>,
@@ -247,6 +289,8 @@ impl SelectStmt {
         columns: SelectColumn,
         from: FromClause,
         where_clause: Option<Expr>,
+        group_by: Vec<ColumnRef>,
+        distinct: bool,
         order_by: Vec<OrderByExpr>,
         limit: Option<usize>,
         offset: Option<usize>,
@@ -255,6 +299,8 @@ impl SelectStmt {
             columns,
             from,
             where_clause,
+            group_by,
+            distinct,
             order_by,
             limit,
             offset,

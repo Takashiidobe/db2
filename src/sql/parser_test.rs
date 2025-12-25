@@ -1,6 +1,7 @@
 mod tests {
     use crate::sql::ast::{
         BinaryOp, ColumnRef, Expr, ForeignKeyRef, FromClause, IndexType, Literal, SelectColumn,
+        SelectItem,
     };
     use crate::sql::{parse_sql, parse_sql_statements};
     use crate::sql::parser::{Token, Tokenizer};
@@ -262,6 +263,47 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_group_by_aggregate() {
+        let sql = "SELECT region, COUNT(*) FROM sales GROUP BY region";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.group_by.len(), 1);
+                assert_eq!(select.group_by[0], ColumnRef::new(None, "region"));
+                match select.columns {
+                    SelectColumn::Items(items) => {
+                        assert_eq!(items.len(), 2);
+                        assert!(matches!(items[0], SelectItem::Column(_)));
+                        assert!(matches!(items[1], SelectItem::Aggregate(_)));
+                    }
+                    _ => panic!("Expected select items"),
+                }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_select_distinct() {
+        let sql = "SELECT DISTINCT name FROM users";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert!(select.distinct);
+                match select.columns {
+                    SelectColumn::Items(items) => {
+                        assert_eq!(items.len(), 1);
+                    }
+                    _ => panic!("Expected select items"),
+                }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_single_column() {
         let sql = "CREATE TABLE test (id INTEGER)";
         let stmt = parse_sql(sql).unwrap();
@@ -310,12 +352,22 @@ mod tests {
 
         match stmt {
             Statement::Select(select) => {
-                if let SelectColumn::Columns(cols) = select.columns {
-                    assert_eq!(cols.len(), 2);
-                    assert_eq!(cols[0].table.as_deref(), Some("users"));
-                    assert_eq!(cols[0].column, "id");
-                    assert_eq!(cols[1].table.as_deref(), Some("orders"));
-                    assert_eq!(cols[1].column, "amount");
+                if let SelectColumn::Items(items) = select.columns {
+                    assert_eq!(items.len(), 2);
+                    match &items[0] {
+                        SelectItem::Column(col) => {
+                            assert_eq!(col.table.as_deref(), Some("users"));
+                            assert_eq!(col.column, "id");
+                        }
+                        _ => panic!("Expected column"),
+                    }
+                    match &items[1] {
+                        SelectItem::Column(col) => {
+                            assert_eq!(col.table.as_deref(), Some("orders"));
+                            assert_eq!(col.column, "amount");
+                        }
+                        _ => panic!("Expected column"),
+                    }
                 } else {
                     panic!("Expected column list");
                 }

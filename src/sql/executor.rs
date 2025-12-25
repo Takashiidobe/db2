@@ -1,7 +1,8 @@
 use super::ast::{
     BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
-    DropTableStmt, Expr, IndexType, InsertStmt, Literal, OrderByExpr, SelectColumn, SelectStmt,
-    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
+    AggregateExpr, AggregateFunc, AggregateTarget, DropTableStmt, Expr, IndexType, InsertStmt,
+    Literal, OrderByExpr, SelectColumn, SelectItem, SelectStmt, Statement, TransactionCommand,
+    TransactionStmt, UpdateStmt,
 };
 use super::parser::parse_sql;
 use crate::index::{BPlusTree, HashIndex};
@@ -1312,6 +1313,8 @@ impl Executor {
                     table,
                     plan.filter,
                     scan,
+                    &stmt.group_by,
+                    stmt.distinct,
                     &stmt.order_by,
                     stmt.limit,
                     stmt.offset,
@@ -1322,6 +1325,8 @@ impl Executor {
                     plan.columns,
                     join_plan,
                     plan.filter,
+                    &stmt.group_by,
+                    stmt.distinct,
                     &stmt.order_by,
                     stmt.limit,
                     stmt.offset,
@@ -1336,6 +1341,8 @@ impl Executor {
         table_name: String,
         where_clause: Option<Expr>,
         scan_plan: ScanPlan,
+        group_by: &[ColumnRef],
+        distinct: bool,
         order_by: &[OrderByExpr],
         limit: Option<usize>,
         offset: Option<usize>,
@@ -1398,8 +1405,6 @@ impl Executor {
         };
 
         let columns_meta = Self::build_column_metadata_for_table(&table_name, &schema);
-        let (column_indices, column_names) =
-            Self::build_projection(&columns_meta, &columns, false)?;
 
         let snapshot = self.current_snapshot();
         let current_txn_id = self.current_txn_id;
@@ -1443,11 +1448,7 @@ impl Executor {
                     continue;
                 }
 
-                // Project selected columns
-                let projected_row: Vec<Value> =
-                    column_indices.iter().map(|&idx| row[idx].clone()).collect();
-
-                result_rows.push(projected_row);
+                result_rows.push(row);
             }
         } else {
             // Table scan: scan all rows and filter
@@ -1469,19 +1470,21 @@ impl Executor {
                     continue;
                 }
 
-                // Project selected columns
-                let projected_row: Vec<Value> =
-                    column_indices.iter().map(|&idx| row[idx].clone()).collect();
-
-                result_rows.push(projected_row);
+                result_rows.push(row);
             }
         }
 
-        let mut result_rows = result_rows;
+        let (column_names, mut result_rows, output_meta) =
+            Self::apply_select_items(result_rows, &columns_meta, &columns, group_by, false)?;
+        if distinct {
+            Self::apply_distinct(&mut result_rows);
+        }
+
+        let output_indices: Vec<usize> = (0..output_meta.len()).collect();
         Self::apply_order_limit(
             &mut result_rows,
-            &columns_meta,
-            &column_indices,
+            &output_meta,
+            &output_indices,
             order_by,
             limit,
             offset,
@@ -1500,6 +1503,8 @@ impl Executor {
         columns: SelectColumn,
         join_plan: JoinPlan,
         where_clause: Option<Expr>,
+        group_by: &[ColumnRef],
+        distinct: bool,
         order_by: &[OrderByExpr],
         limit: Option<usize>,
         offset: Option<usize>,
@@ -1542,8 +1547,6 @@ impl Executor {
             &join_plan.inner_table,
             &right_schema,
         );
-        let (column_indices, column_names) =
-            Self::build_projection(&combined_meta, &columns, true)?;
 
         match join_plan.strategy {
             JoinStrategy::NestedLoop { inner_has_index } => self.execute_nested_loop_join(
@@ -1553,9 +1556,10 @@ impl Executor {
                 right_join_idx,
                 &right_schema,
                 &combined_meta,
-                column_indices,
-                column_names,
+                &columns,
+                group_by,
                 inner_has_index,
+                distinct,
                 order_by,
                 limit,
                 offset,
@@ -1566,8 +1570,9 @@ impl Executor {
                 left_join_idx,
                 right_join_idx,
                 &combined_meta,
-                column_indices,
-                column_names,
+                &columns,
+                group_by,
+                distinct,
                 order_by,
                 limit,
                 offset,
@@ -1584,9 +1589,10 @@ impl Executor {
         right_join_idx: usize,
         right_schema: &Schema,
         combined_meta: &[(Option<String>, String)],
-        column_indices: Vec<usize>,
-        column_names: Vec<String>,
+        columns: &SelectColumn,
+        group_by: &[ColumnRef],
         inner_has_index: bool,
+        distinct: bool,
         order_by: &[OrderByExpr],
         limit: Option<usize>,
         offset: Option<usize>,
@@ -1760,20 +1766,26 @@ impl Executor {
                     continue;
                 }
 
-                let projected_row: Vec<Value> = column_indices
-                    .iter()
-                    .map(|&idx| combined_row[idx].clone())
-                    .collect();
-
-                result_rows.push(projected_row);
+                result_rows.push(combined_row);
             }
         }
 
-        let mut result_rows = result_rows;
+        let (column_names, mut result_rows, output_meta) = Self::apply_select_items(
+            result_rows,
+            combined_meta,
+            columns,
+            group_by,
+            true,
+        )?;
+        if distinct {
+            Self::apply_distinct(&mut result_rows);
+        }
+
+        let output_indices: Vec<usize> = (0..output_meta.len()).collect();
         Self::apply_order_limit(
             &mut result_rows,
-            combined_meta,
-            &column_indices,
+            &output_meta,
+            &output_indices,
             order_by,
             limit,
             offset,
@@ -1794,8 +1806,9 @@ impl Executor {
         left_join_idx: usize,
         right_join_idx: usize,
         combined_meta: &[(Option<String>, String)],
-        column_indices: Vec<usize>,
-        column_names: Vec<String>,
+        columns: &SelectColumn,
+        group_by: &[ColumnRef],
+        distinct: bool,
         order_by: &[OrderByExpr],
         limit: Option<usize>,
         offset: Option<usize>,
@@ -1850,11 +1863,7 @@ impl Executor {
                                 continue;
                             }
 
-                            let projected_row: Vec<Value> = column_indices
-                                .iter()
-                                .map(|&idx| combined[idx].clone())
-                                .collect();
-                            result_rows.push(projected_row);
+                            result_rows.push(combined);
                         }
                     }
 
@@ -1864,11 +1873,22 @@ impl Executor {
             }
         }
 
-        let mut result_rows = result_rows;
+        let (column_names, mut result_rows, output_meta) = Self::apply_select_items(
+            result_rows,
+            combined_meta,
+            columns,
+            group_by,
+            true,
+        )?;
+        if distinct {
+            Self::apply_distinct(&mut result_rows);
+        }
+
+        let output_indices: Vec<usize> = (0..output_meta.len()).collect();
         Self::apply_order_limit(
             &mut result_rows,
-            combined_meta,
-            &column_indices,
+            &output_meta,
+            &output_indices,
             order_by,
             limit,
             offset,
@@ -2275,13 +2295,29 @@ impl Executor {
                     .collect();
                 Ok((indices, names))
             }
-            SelectColumn::Columns(cols) => {
+            SelectColumn::Items(items) => {
                 let mut indices = Vec::new();
                 let mut names = Vec::new();
-                for col_ref in cols {
-                    let idx = Self::resolve_column_index(columns_meta, col_ref)?;
-                    indices.push(idx);
-                    names.push(Self::format_column_name(&columns_meta[idx], use_qualified));
+                for item in items {
+                    match item {
+                        SelectItem::Column(col_ref) => {
+                            let idx = Self::resolve_column_index(columns_meta, col_ref)?;
+                            indices.push(idx);
+                            names.push(Self::format_column_name(&columns_meta[idx], use_qualified));
+                        }
+                        SelectItem::Aggregate(_) => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Cannot project aggregate without GROUP BY",
+                            ));
+                        }
+                        SelectItem::All => {
+                            return Err(io::Error::new(
+                                io::ErrorKind::InvalidInput,
+                                "Invalid '*' in select list",
+                            ));
+                        }
+                    }
                 }
                 Ok((indices, names))
             }
@@ -2341,6 +2377,328 @@ impl Executor {
         }
 
         Ok(())
+    }
+
+    fn apply_distinct(rows: &mut Vec<Vec<Value>>) {
+        let mut seen = std::collections::BTreeSet::new();
+        rows.retain(|row| seen.insert(row.clone()));
+    }
+
+    fn apply_select_items(
+        rows: Vec<Vec<Value>>,
+        columns_meta: &[(Option<String>, String)],
+        selection: &SelectColumn,
+        group_by: &[ColumnRef],
+        use_qualified: bool,
+    ) -> io::Result<(Vec<String>, Vec<Vec<Value>>, Vec<(Option<String>, String)>)> {
+        let has_aggregate = matches!(selection, SelectColumn::Items(items)
+            if items.iter().any(|item| matches!(item, SelectItem::Aggregate(_)))
+        );
+
+        if matches!(selection, SelectColumn::All) && (!group_by.is_empty() || has_aggregate) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "SELECT * cannot be used with GROUP BY or aggregates",
+            ));
+        }
+
+        if !has_aggregate && group_by.is_empty() {
+            let (indices, column_names) = Self::build_projection(columns_meta, selection, use_qualified)?;
+            let output_rows = rows
+                .into_iter()
+                .map(|row| indices.iter().map(|&idx| row[idx].clone()).collect())
+                .collect();
+            let output_meta = indices
+                .iter()
+                .map(|&idx| columns_meta[idx].clone())
+                .collect();
+            return Ok((column_names, output_rows, output_meta));
+        }
+
+        let items = match selection {
+            SelectColumn::Items(items) => items,
+            SelectColumn::All => unreachable!("handled above"),
+        };
+
+        let mut group_by_indices = Vec::with_capacity(group_by.len());
+        for col in group_by {
+            let idx = Self::resolve_column_index(columns_meta, col)?;
+            group_by_indices.push(idx);
+        }
+
+        #[derive(Clone)]
+        struct AggSpec {
+            func: AggregateFunc,
+            target_index: Option<usize>,
+            count_all: bool,
+        }
+
+        #[derive(Clone)]
+        enum AggState {
+            Count(i64),
+            Sum { sum: f64, count: u64 },
+            Avg { sum: f64, count: u64 },
+            Min(Option<Value>),
+            Max(Option<Value>),
+        }
+
+        impl AggState {
+            fn new(spec: &AggSpec) -> Self {
+                match spec.func {
+                    AggregateFunc::Count => AggState::Count(0),
+                    AggregateFunc::Sum => AggState::Sum { sum: 0.0, count: 0 },
+                    AggregateFunc::Avg => AggState::Avg { sum: 0.0, count: 0 },
+                    AggregateFunc::Min => AggState::Min(None),
+                    AggregateFunc::Max => AggState::Max(None),
+                }
+            }
+
+            fn finish(self) -> Value {
+                match self {
+                    AggState::Count(count) => Value::Integer(count),
+                    AggState::Sum { sum, count } => {
+                        if count == 0 {
+                            Value::Null
+                        } else {
+                            Value::Float(sum)
+                        }
+                    }
+                    AggState::Avg { sum, count } => {
+                        if count == 0 {
+                            Value::Null
+                        } else {
+                            Value::Float(sum / count as f64)
+                        }
+                    }
+                    AggState::Min(value) => value.unwrap_or(Value::Null),
+                    AggState::Max(value) => value.unwrap_or(Value::Null),
+                }
+            }
+        }
+
+        let mut agg_specs = Vec::new();
+        let mut item_to_agg_index = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                SelectItem::Aggregate(agg) => {
+                    let (count_all, target_index) = match &agg.target {
+                        AggregateTarget::All => (true, None),
+                        AggregateTarget::Column(col) => {
+                            let idx = Self::resolve_column_index(columns_meta, col)?;
+                            (false, Some(idx))
+                        }
+                    };
+                    agg_specs.push(AggSpec {
+                        func: agg.func,
+                        target_index,
+                        count_all,
+                    });
+                    item_to_agg_index.push(Some(agg_specs.len() - 1));
+                }
+                _ => item_to_agg_index.push(None),
+            }
+        }
+
+        for (item, agg_index) in items.iter().zip(item_to_agg_index.iter()) {
+            if let SelectItem::Column(col) = item {
+                if group_by_indices.is_empty() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Non-aggregate columns require GROUP BY",
+                    ));
+                }
+                let idx = Self::resolve_column_index(columns_meta, col)?;
+                if !group_by_indices.contains(&idx) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Column '{}' must appear in GROUP BY", col.column),
+                    ));
+                }
+            }
+            if let (SelectItem::Aggregate(_), None) = (item, agg_index) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Invalid aggregate expression",
+                ));
+            }
+        }
+
+        let mut output_meta = Vec::with_capacity(items.len());
+        let mut column_names = Vec::with_capacity(items.len());
+        for item in items {
+            match item {
+                SelectItem::Column(col) => {
+                    let idx = Self::resolve_column_index(columns_meta, col)?;
+                    output_meta.push(columns_meta[idx].clone());
+                    column_names.push(Self::format_column_name(&columns_meta[idx], use_qualified));
+                }
+                SelectItem::Aggregate(agg) => {
+                    let name = Self::format_aggregate_name(agg);
+                    output_meta.push((None, name.clone()));
+                    column_names.push(name);
+                }
+                SelectItem::All => {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Invalid '*' in select list",
+                    ));
+                }
+            }
+        }
+
+        let mut groups: std::collections::BTreeMap<Vec<Value>, Vec<AggState>> =
+            std::collections::BTreeMap::new();
+        if group_by_indices.is_empty() && has_aggregate {
+            groups.entry(Vec::new()).or_insert_with(|| {
+                agg_specs.iter().map(AggState::new).collect::<Vec<_>>()
+            });
+        }
+
+        for row in rows {
+            let key: Vec<Value> = group_by_indices
+                .iter()
+                .map(|&idx| row[idx].clone())
+                .collect();
+
+            let states = groups.entry(key).or_insert_with(|| {
+                agg_specs.iter().map(AggState::new).collect::<Vec<_>>()
+            });
+
+            for (idx, spec) in agg_specs.iter().enumerate() {
+                let value_opt = if spec.count_all {
+                    None
+                } else {
+                    spec.target_index.map(|col_idx| row[col_idx].clone())
+                };
+
+                match (&mut states[idx], spec.func) {
+                    (AggState::Count(count), AggregateFunc::Count) => {
+                        if spec.count_all {
+                            *count += 1;
+                        } else if let Some(value) = value_opt {
+                            if !value.is_null() {
+                                *count += 1;
+                            }
+                        }
+                    }
+                    (AggState::Sum { sum, count }, AggregateFunc::Sum) => {
+                        if let Some(value) = value_opt {
+                            if let Some(num) = Self::numeric_to_f64(&value)? {
+                                *sum += num;
+                                *count += 1;
+                            }
+                        }
+                    }
+                    (AggState::Avg { sum, count }, AggregateFunc::Avg) => {
+                        if let Some(value) = value_opt {
+                            if let Some(num) = Self::numeric_to_f64(&value)? {
+                                *sum += num;
+                                *count += 1;
+                            }
+                        }
+                    }
+                    (AggState::Min(current), AggregateFunc::Min) => {
+                        if let Some(value) = value_opt {
+                            if value.is_null() {
+                                continue;
+                            }
+                            let replace = match current {
+                                None => true,
+                                Some(existing) => value < *existing,
+                            };
+                            if replace {
+                                *current = Some(value);
+                            }
+                        }
+                    }
+                    (AggState::Max(current), AggregateFunc::Max) => {
+                        if let Some(value) = value_opt {
+                            if value.is_null() {
+                                continue;
+                            }
+                            let replace = match current {
+                                None => true,
+                                Some(existing) => value > *existing,
+                            };
+                            if replace {
+                                *current = Some(value);
+                            }
+                        }
+                    }
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Invalid aggregate state",
+                        ));
+                    }
+                }
+            }
+        }
+
+        let mut output_rows = Vec::new();
+        for (group_key, agg_states) in groups {
+            let mut row = Vec::with_capacity(items.len());
+            for (item, agg_index) in items.iter().zip(item_to_agg_index.iter()) {
+                match (item, agg_index) {
+                    (SelectItem::Column(col), _) => {
+                        let idx = Self::resolve_column_index(columns_meta, col)?;
+                        let group_pos = group_by_indices
+                            .iter()
+                            .position(|&gidx| gidx == idx)
+                            .ok_or_else(|| {
+                                io::Error::new(
+                                    io::ErrorKind::InvalidInput,
+                                    "GROUP BY column missing",
+                                )
+                            })?;
+                        row.push(group_key[group_pos].clone());
+                    }
+                    (SelectItem::Aggregate(_), Some(agg_idx)) => {
+                        row.push(agg_states[*agg_idx].clone().finish());
+                    }
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Invalid select item",
+                        ));
+                    }
+                }
+            }
+            output_rows.push(row);
+        }
+
+        Ok((column_names, output_rows, output_meta))
+    }
+
+    fn format_aggregate_name(agg: &AggregateExpr) -> String {
+        let func = match agg.func {
+            AggregateFunc::Count => "COUNT",
+            AggregateFunc::Sum => "SUM",
+            AggregateFunc::Avg => "AVG",
+            AggregateFunc::Min => "MIN",
+            AggregateFunc::Max => "MAX",
+        };
+        let target = match &agg.target {
+            AggregateTarget::All => "*".to_string(),
+            AggregateTarget::Column(col) => Self::format_column_ref(col),
+        };
+        format!("{}({})", func, target)
+    }
+
+    fn numeric_to_f64(value: &Value) -> io::Result<Option<f64>> {
+        match value {
+            Value::Null => Ok(None),
+            Value::Integer(i) => Ok(Some(*i as f64)),
+            Value::Unsigned(u) => Ok(Some(*u as f64)),
+            Value::Float(fv) => Ok(Some(*fv)),
+            Value::Decimal(d) => d.to_f64().ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "Invalid decimal value")
+            }).map(Some),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Aggregate expects numeric values",
+            )),
+        }
     }
 
     fn resolve_column_index(

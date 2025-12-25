@@ -1,8 +1,8 @@
 use super::ast::{
-    BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
-    DropIndexStmt, DropTableStmt, Expr, ForeignKeyRef, FromClause, IndexType, InsertStmt, Literal,
-    OrderByExpr, SelectColumn, SelectStmt, Statement, TransactionCommand, TransactionStmt,
-    UpdateStmt,
+    AggregateExpr, AggregateFunc, AggregateTarget, BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt,
+    CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, Expr, ForeignKeyRef,
+    FromClause, IndexType, InsertStmt, Literal, OrderByExpr, SelectColumn, SelectItem, SelectStmt,
+    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 
 /// Parse errors
@@ -52,10 +52,17 @@ pub(crate) enum Token {
     Numeric,
     Order,
     By,
+    Group,
     Limit,
     Offset,
     Asc,
     Desc,
+    Count,
+    Sum,
+    Avg,
+    Min,
+    Max,
+    Distinct,
     True,
     False,
     Select,
@@ -125,10 +132,17 @@ impl PartialEq for Token {
             | (Token::Numeric, Token::Numeric)
             | (Token::Order, Token::Order)
             | (Token::By, Token::By)
+            | (Token::Group, Token::Group)
             | (Token::Limit, Token::Limit)
             | (Token::Offset, Token::Offset)
             | (Token::Asc, Token::Asc)
             | (Token::Desc, Token::Desc)
+            | (Token::Count, Token::Count)
+            | (Token::Sum, Token::Sum)
+            | (Token::Avg, Token::Avg)
+            | (Token::Min, Token::Min)
+            | (Token::Max, Token::Max)
+            | (Token::Distinct, Token::Distinct)
             | (Token::True, Token::True)
             | (Token::False, Token::False)
             | (Token::Select, Token::Select)
@@ -197,10 +211,17 @@ impl std::fmt::Display for Token {
             Token::Numeric => write!(f, "NUMERIC"),
             Token::Order => write!(f, "ORDER"),
             Token::By => write!(f, "BY"),
+            Token::Group => write!(f, "GROUP"),
             Token::Limit => write!(f, "LIMIT"),
             Token::Offset => write!(f, "OFFSET"),
             Token::Asc => write!(f, "ASC"),
             Token::Desc => write!(f, "DESC"),
+            Token::Count => write!(f, "COUNT"),
+            Token::Sum => write!(f, "SUM"),
+            Token::Avg => write!(f, "AVG"),
+            Token::Min => write!(f, "MIN"),
+            Token::Max => write!(f, "MAX"),
+            Token::Distinct => write!(f, "DISTINCT"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -500,10 +521,17 @@ impl Tokenizer {
                     "NUMERIC" => Token::Numeric,
                     "ORDER" => Token::Order,
                     "BY" => Token::By,
+                    "GROUP" => Token::Group,
                     "LIMIT" => Token::Limit,
                     "OFFSET" => Token::Offset,
                     "ASC" => Token::Asc,
                     "DESC" => Token::Desc,
+                    "COUNT" => Token::Count,
+                    "SUM" => Token::Sum,
+                    "AVG" => Token::Avg,
+                    "MIN" => Token::Min,
+                    "MAX" => Token::Max,
+                    "DISTINCT" => Token::Distinct,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
@@ -1239,14 +1267,21 @@ impl Parser {
     fn parse_select(&mut self) -> Result<SelectStmt, ParseError> {
         self.expect(Token::Select)?;
 
+        let distinct = if matches!(self.current(), Token::Distinct) {
+            self.advance();
+            true
+        } else {
+            false
+        };
+
         // Parse column list or *
         let columns = if matches!(self.current(), Token::Asterisk) {
             self.advance();
             SelectColumn::All
         } else {
-            let mut column_names = Vec::new();
+            let mut items = Vec::new();
             loop {
-                column_names.push(self.parse_column_ref()?);
+                items.push(self.parse_select_item()?);
 
                 if matches!(self.current(), Token::Comma) {
                     self.advance();
@@ -1254,7 +1289,7 @@ impl Parser {
                     break;
                 }
             }
-            SelectColumn::Columns(column_names)
+            SelectColumn::Items(items)
         };
 
         self.expect(Token::From)?;
@@ -1318,6 +1353,20 @@ impl Parser {
             None
         };
 
+        let mut group_by = Vec::new();
+        if matches!(self.current(), Token::Group) {
+            self.advance();
+            self.expect(Token::By)?;
+            loop {
+                group_by.push(self.parse_column_ref()?);
+                if matches!(self.current(), Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
         let mut order_by = Vec::new();
         if matches!(self.current(), Token::Order) {
             self.advance();
@@ -1357,8 +1406,51 @@ impl Parser {
         }
 
         Ok(SelectStmt::new(
-            columns, from, where_clause, order_by, limit, offset,
+            columns,
+            from,
+            where_clause,
+            group_by,
+            distinct,
+            order_by,
+            limit,
+            offset,
         ))
+    }
+
+    fn parse_select_item(&mut self) -> Result<SelectItem, ParseError> {
+        let token = self.current().clone();
+        match token {
+            Token::Count | Token::Sum | Token::Avg | Token::Min | Token::Max => {
+                let func = match token {
+                    Token::Count => AggregateFunc::Count,
+                    Token::Sum => AggregateFunc::Sum,
+                    Token::Avg => AggregateFunc::Avg,
+                    Token::Min => AggregateFunc::Min,
+                    Token::Max => AggregateFunc::Max,
+                    _ => unreachable!("aggregate token matched above"),
+                };
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let target = if matches!(self.current(), Token::Asterisk) {
+                    if func != AggregateFunc::Count {
+                        return Err(ParseError::InvalidSyntax(
+                            "Only COUNT supports '*'".to_string(),
+                        ));
+                    }
+                    self.advance();
+                    AggregateTarget::All
+                } else {
+                    let col = self.parse_column_ref()?;
+                    AggregateTarget::Column(col)
+                };
+                self.expect(Token::RightParen)?;
+                Ok(SelectItem::Aggregate(AggregateExpr::new(func, target)))
+            }
+            _ => {
+                let col = self.parse_column_ref()?;
+                Ok(SelectItem::Column(col))
+            }
+        }
     }
 
     fn parse_non_negative_usize(&mut self, label: &str) -> Result<usize, ParseError> {

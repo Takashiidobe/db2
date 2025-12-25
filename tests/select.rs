@@ -256,6 +256,66 @@ fn test_select_limit_offset() {
 }
 
 #[test]
+fn test_select_group_by_count() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE sales (region VARCHAR, amount INTEGER)");
+    db.execute_ok("INSERT INTO sales VALUES ('east', 10), ('west', 5), ('east', 7)");
+
+    let result =
+        db.execute_ok("SELECT region, COUNT(*) FROM sales GROUP BY region ORDER BY region ASC");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0][0], Value::String("east".to_string()));
+            assert_eq!(rows[0][1], Value::Integer(2));
+            assert_eq!(rows[1][0], Value::String("west".to_string()));
+            assert_eq!(rows[1][1], Value::Integer(1));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_select_aggregate_no_group() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE sales (region VARCHAR, amount INTEGER)");
+    db.execute_ok("INSERT INTO sales VALUES ('east', 10), ('west', 5), ('east', 7)");
+
+    let result = db.execute_ok("SELECT COUNT(*), SUM(amount) FROM sales");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::Integer(3));
+            match &rows[0][1] {
+                Value::Float(v) => assert!((*v - 22.0).abs() < f64::EPSILON),
+                other => panic!("Expected float sum, got {:?}", other),
+            }
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_select_distinct() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (name VARCHAR, age INTEGER)");
+    db.execute_ok("INSERT INTO users VALUES ('Alice', 30), ('Bob', 20), ('Alice', 30)");
+
+    let result = db.execute_ok("SELECT DISTINCT name, age FROM users ORDER BY name ASC");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0][0], Value::String("Alice".to_string()));
+            assert_eq!(rows[1][0], Value::String("Bob".to_string()));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_select_where_no_matches() {
     let mut db = TestDb::new().unwrap();
 
