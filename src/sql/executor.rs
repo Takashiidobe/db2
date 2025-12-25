@@ -559,21 +559,33 @@ impl Executor {
             })?;
 
             for (row_id, row) in rows_to_delete {
-                match table.delete(row_id) {
-                    Ok(()) => {
-                        rows_deleted += 1;
-                        if let Some((txn_id, _)) = wal_context {
-                            wal_records.push(WalRecord::Delete {
-                                txn_id,
-                                table: table_name.clone(),
-                                row_id,
-                                values: row,
-                            });
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e),
-                }
+                let (txn_id, _) = match wal_context {
+                    Some(context) => context,
+                    None => continue,
+                };
+
+                let (mut meta, values) = table.get_with_metadata(row_id)?;
+                meta.xmax = txn_id;
+                let serialized = RowSerializer::serialize_with_metadata(
+                    &values,
+                    Some(table.schema()),
+                    meta,
+                )
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
+                page.update_row(row_id.slot_id(), &serialized)
+                    .map_err(io::Error::from)?;
+                table
+                    .buffer_pool_mut()
+                    .unpin_page(row_id.page_id(), true);
+
+                rows_deleted += 1;
+                wal_records.push(WalRecord::Delete {
+                    txn_id,
+                    table: table_name.clone(),
+                    row_id,
+                    values: row,
+                });
             }
         }
 
@@ -582,11 +594,6 @@ impl Executor {
             if track_txn {
                 self.txn_log.push(record);
             }
-        }
-
-        // Rebuild indexes to drop stale entries
-        if rows_deleted > 0 {
-            self.rebuild_indexes_for_table(&table_name)?;
         }
 
         if let Some((txn_id, implicit)) = wal_context {
