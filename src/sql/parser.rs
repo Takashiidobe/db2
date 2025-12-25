@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
-    DropIndexStmt, DropTableStmt, Expr, FromClause, InsertStmt, Literal, SelectColumn, SelectStmt,
-    Statement, UpdateStmt,
+    DropIndexStmt, DropTableStmt, Expr, FromClause, IndexType, InsertStmt, Literal, SelectColumn,
+    SelectStmt, Statement, UpdateStmt,
 };
 
 /// Parse errors
@@ -48,6 +48,7 @@ pub(crate) enum Token {
     Where,
     Index,
     On,
+    Using,
     Join,
     And,
     Delete,
@@ -98,6 +99,7 @@ impl PartialEq for Token {
             | (Token::Where, Token::Where)
             | (Token::Index, Token::Index)
             | (Token::On, Token::On)
+            | (Token::Using, Token::Using)
             | (Token::Join, Token::Join)
             | (Token::And, Token::And)
             | (Token::Delete, Token::Delete)
@@ -145,6 +147,7 @@ impl std::fmt::Display for Token {
             Token::Where => write!(f, "WHERE"),
             Token::Index => write!(f, "INDEX"),
             Token::On => write!(f, "ON"),
+            Token::Using => write!(f, "USING"),
             Token::Join => write!(f, "JOIN"),
             Token::And => write!(f, "AND"),
             Token::Delete => write!(f, "DELETE"),
@@ -421,6 +424,7 @@ impl Tokenizer {
                     "WHERE" => Token::Where,
                     "INDEX" => Token::Index,
                     "ON" => Token::On,
+                    "USING" => Token::Using,
                     "JOIN" => Token::Join,
                     "AND" => Token::And,
                     "DELETE" => Token::Delete,
@@ -610,6 +614,22 @@ impl Parser {
             }
         };
 
+        let mut index_type = IndexType::BTree;
+        if matches!(self.current(), Token::Using) {
+            self.advance();
+            index_type = match self.current() {
+                Token::Identifier(s) if s.eq_ignore_ascii_case("hash") => IndexType::Hash,
+                Token::Identifier(s) if s.eq_ignore_ascii_case("btree") => IndexType::BTree,
+                token => {
+                    return Err(ParseError::InvalidSyntax(format!(
+                        "Unsupported index type {}",
+                        token
+                    )));
+                }
+            };
+            self.advance();
+        }
+
         self.expect(Token::LeftParen)?;
 
         let mut columns = Vec::new();
@@ -637,7 +657,9 @@ impl Parser {
 
         self.expect(Token::RightParen)?;
 
-        Ok(CreateIndexStmt::new(index_name, table_name, columns))
+        Ok(CreateIndexStmt::with_type(
+            index_name, table_name, columns, index_type,
+        ))
     }
 
     fn parse_drop_table(&mut self) -> Result<DropTableStmt, ParseError> {

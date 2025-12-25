@@ -7,6 +7,7 @@ mod tests {
         let planner = Planner::new(vec![IndexMetadata {
             table: "users".to_string(),
             columns: vec!["id".to_string()],
+            index_type: IndexType::BTree,
         }]);
 
         let stmt = SelectStmt {
@@ -62,6 +63,7 @@ mod tests {
         let planner = Planner::new(vec![IndexMetadata {
             table: "orders".to_string(),
             columns: vec!["user_id".to_string()],
+            index_type: IndexType::BTree,
         }]);
 
         let stmt = SelectStmt {
@@ -96,6 +98,7 @@ mod tests {
         let planner = Planner::new(vec![IndexMetadata {
             table: "users".to_string(),
             columns: vec!["id".to_string()],
+            index_type: IndexType::BTree,
         }]);
 
         let stmt = SelectStmt {
@@ -130,6 +133,7 @@ mod tests {
         let planner = Planner::new(vec![IndexMetadata {
             table: "items".to_string(),
             columns: vec!["a".to_string(), "b".to_string()],
+            index_type: IndexType::BTree,
         }]);
 
         let stmt = SelectStmt {

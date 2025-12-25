@@ -1,6 +1,6 @@
 mod tests {
     use crate::{
-        sql::{ExecutionResult, Executor, parser::parse_sql},
+        sql::{ExecutionResult, Executor, IndexType, parser::parse_sql},
         table::RowId,
         types::Value,
     };
@@ -509,10 +509,12 @@ mod tests {
                 index_name,
                 table_name,
                 columns,
+                index_type,
             } => {
                 assert_eq!(index_name, "idx_id");
                 assert_eq!(table_name, "users");
                 assert_eq!(columns, vec!["id".to_string()]);
+                assert_eq!(index_type, IndexType::BTree);
             }
             _ => panic!("Expected CreateIndex result"),
         }

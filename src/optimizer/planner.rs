@@ -1,4 +1,6 @@
-use crate::sql::ast::{BinaryOp, ColumnRef, Expr, FromClause, Literal, SelectColumn, SelectStmt};
+use crate::sql::ast::{
+    BinaryOp, ColumnRef, Expr, FromClause, IndexType, Literal, SelectColumn, SelectStmt,
+};
 
 use super::rules::extract_indexable_predicates;
 
@@ -6,6 +8,7 @@ use super::rules::extract_indexable_predicates;
 pub struct IndexMetadata {
     pub table: String,
     pub columns: Vec<String>,
+    pub index_type: IndexType,
 }
 
 /// Physical scan choice for a single table.
@@ -14,6 +17,7 @@ pub enum ScanPlan {
     SeqScan,
     IndexScan {
         index_columns: Vec<String>,
+        index_type: IndexType,
         predicates: Vec<(String, BinaryOp, Literal)>,
     },
 }
@@ -164,6 +168,15 @@ impl Planner {
                 continue;
             }
 
+            if idx.index_type == IndexType::Hash {
+                if used.len() != idx.columns.len() {
+                    continue;
+                }
+                if !used.iter().all(|(_, op, _)| *op == BinaryOp::Eq) {
+                    continue;
+                }
+            }
+
             if best
                 .as_ref()
                 .is_none_or(|(_, b_used)| used.len() > b_used.len())
@@ -175,6 +188,7 @@ impl Planner {
         if let Some((idx, used)) = best {
             ScanPlan::IndexScan {
                 index_columns: idx.columns.clone(),
+                index_type: idx.index_type,
                 predicates: used,
             }
         } else {

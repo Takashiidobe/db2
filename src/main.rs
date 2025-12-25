@@ -7,7 +7,7 @@ fn main() -> io::Result<()> {
     println!("Commands:");
     println!("  CREATE TABLE <name> (<col1> <type>, <col2> <type>, ...)");
     println!("  DROP TABLE <name>");
-    println!("  CREATE INDEX <idx_name> ON <table>(<column>)");
+    println!("  CREATE INDEX <idx_name> ON <table>(<column>) [USING HASH]");
     println!("  INSERT INTO <name> VALUES (<val1>, <val2>, ...)");
     println!("  UPDATE <table> SET <col> = <expr>[, ...] [WHERE <pred>]");
     println!("  DELETE FROM <name> [WHERE <pred>]");
@@ -36,8 +36,14 @@ fn main() -> io::Result<()> {
         println!("Indexes: (none loaded)");
     } else {
         println!("Indexes:");
-        for (name, table, cols) in indexes {
-            println!("  - {} on {}({})", name, table, cols.join(", "));
+        for (name, table, cols, index_type) in indexes {
+            println!(
+                "  - {} ({}) on {}({})",
+                name,
+                index_type,
+                table,
+                cols.join(", ")
+            );
         }
     }
     println!();

@@ -1,4 +1,4 @@
-use db2::sql::{ExecutionResult, Executor, parse_sql};
+use db2::sql::{ExecutionResult, Executor, IndexType, parse_sql};
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
@@ -50,7 +50,7 @@ impl TestDb {
     }
 
     /// List all indexes
-    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>)> {
+    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType)> {
         self.executor.list_indexes()
     }
 

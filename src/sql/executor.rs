@@ -1,8 +1,9 @@
 use super::ast::{
     BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
-    DropTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement, UpdateStmt,
+    DropTableStmt, Expr, IndexType, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
+    UpdateStmt,
 };
-use crate::index::BPlusTree;
+use crate::index::{BPlusTree, HashIndex};
 use crate::optimizer::planner::{
     FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
 };
@@ -33,6 +34,7 @@ pub enum ExecutionResult {
         index_name: String,
         table_name: String,
         columns: Vec<String>,
+        index_type: IndexType,
     },
     /// Index dropped successfully
     DropIndex { index_name: String },
@@ -94,11 +96,13 @@ impl std::fmt::Display for ExecutionResult {
                 index_name,
                 table_name,
                 columns,
+                index_type,
             } => {
                 write!(
                     f,
-                    "Index '{}' created on {}({})",
+                    "Index '{}' ({}) created on {}({})",
                     index_name,
+                    index_type,
                     table_name,
                     columns.join(", ")
                 )
@@ -136,15 +140,49 @@ struct IndexEntry {
     key: IndexKey,
     column_indices: Vec<usize>,
     column_types: Vec<DbDataType>,
-    tree: BPlusTree<CompositeKey, RowId>,
+    index_type: IndexType,
+    data: IndexData,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+enum IndexData {
+    BTree(BPlusTree<CompositeKey, RowId>),
+    Hash(HashIndex<CompositeKey, RowId>),
+}
+
+impl IndexEntry {
+    fn insert(&mut self, key: CompositeKey, row_id: RowId) {
+        match &mut self.data {
+            IndexData::BTree(tree) => tree.insert(key, row_id),
+            IndexData::Hash(index) => index.insert(key, row_id),
+        }
+    }
+
+    fn lookup_range(&self, ranges: &[(CompositeKey, CompositeKey)]) -> Vec<RowId> {
+        let mut row_ids = Vec::new();
+        if let IndexData::BTree(tree) = &self.data {
+            for (start, end) in ranges {
+                for (_k, v) in tree.range_scan(start, end) {
+                    row_ids.push(v);
+                }
+            }
+        }
+        row_ids
+    }
+
+    fn lookup_eq(&self, key: &CompositeKey) -> Vec<RowId> {
+        match &self.data {
+            IndexData::BTree(tree) => tree.range_scan(key, key).map(|(_k, v)| v).collect(),
+            IndexData::Hash(index) => index.get(key).copied().collect(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 struct CompositeKey {
     values: Vec<IndexValue>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 enum IndexValue {
     Signed(i64),
     Unsigned(u64),
@@ -248,7 +286,7 @@ pub struct Executor {
     buffer_pool_size: usize,
     /// Table catalog (maps table name to HeapTable)
     tables: HashMap<String, HeapTable>,
-    /// Index catalog (multi-column B+Tree over integer columns)
+    /// Index catalog (in-memory B-Tree or hash indexes over integer columns)
     indexes: Vec<IndexEntry>,
 }
 
@@ -405,8 +443,9 @@ impl Executor {
         let row_ids = match scan_plan {
             ScanPlan::IndexScan {
                 index_columns,
+                index_type,
                 predicates,
-            } => self.index_scan(&table_name, &index_columns, &predicates)?,
+            } => self.index_scan(&table_name, &index_columns, index_type, &predicates)?,
             ScanPlan::SeqScan => None,
         };
 
@@ -533,8 +572,9 @@ impl Executor {
         let row_ids = match scan_plan {
             ScanPlan::IndexScan {
                 index_columns,
+                index_type,
                 predicates,
-            } => self.index_scan(&table_name, &index_columns, &predicates)?,
+            } => self.index_scan(&table_name, &index_columns, index_type, &predicates)?,
             ScanPlan::SeqScan => None,
         };
 
@@ -633,7 +673,7 @@ impl Executor {
             {
                 let key =
                     Self::build_composite_key(&values, &index.column_indices, &index.column_types)?;
-                index.tree.insert(key, row_id);
+                index.insert(key, row_id);
             }
 
             row_ids.push(row_id);
@@ -713,13 +753,19 @@ impl Executor {
         }
 
         // Create the index and populate it with existing data
-        let mut index = BPlusTree::new();
+        let mut data = match stmt.index_type {
+            IndexType::BTree => IndexData::BTree(BPlusTree::new()),
+            IndexType::Hash => IndexData::Hash(HashIndex::new()),
+        };
 
         // Scan the table and add all existing rows to the index
         let mut scan = TableScan::new(table);
         while let Some((row_id, row)) = scan.next()? {
             let key = Self::build_composite_key(&row, &column_indices, &column_types)?;
-            index.insert(key, row_id);
+            match &mut data {
+                IndexData::BTree(tree) => tree.insert(key, row_id),
+                IndexData::Hash(index) => index.insert(key, row_id),
+            }
         }
 
         let entry = IndexEntry {
@@ -730,7 +776,8 @@ impl Executor {
             },
             column_indices,
             column_types,
-            tree: index,
+            index_type: stmt.index_type,
+            data,
         };
 
         self.indexes.push(entry);
@@ -740,6 +787,7 @@ impl Executor {
             index_name: stmt.index_name,
             table_name: stmt.table_name,
             columns: stmt.columns,
+            index_type: stmt.index_type,
         })
     }
 
@@ -814,8 +862,9 @@ impl Executor {
         let row_ids = match scan_plan {
             ScanPlan::IndexScan {
                 index_columns,
+                index_type,
                 predicates,
-            } => self.index_scan(&table_name, &index_columns, &predicates)?,
+            } => self.index_scan(&table_name, &index_columns, index_type, &predicates)?,
             ScanPlan::SeqScan => None,
         };
 
@@ -1042,14 +1091,8 @@ impl Executor {
                     let Some(index_value) = IndexValue::from_value(&coerced_key) else {
                         continue;
                     };
-                    let mut start = CompositeKey::min_values(&index.column_types);
-                    let mut end = CompositeKey::max_values(&index.column_types);
-                    start.values[0] = index_value.clone();
-                    end.values[0] = index_value;
-
-                    for (_k, row_id) in index.tree.range_scan(&start, &end) {
-                        matched_ids.push(row_id);
-                    }
+                    let key = CompositeKey::new(vec![index_value.clone()]);
+                    matched_ids.extend(index.lookup_eq(&key));
                 }
 
                 for row_id in matched_ids {
@@ -1226,26 +1269,29 @@ impl Executor {
         &self,
         table_name: &str,
         index_columns: &[String],
+        index_type: IndexType,
         predicates: &[(String, BinaryOp, Literal)],
     ) -> io::Result<Option<Vec<RowId>>> {
-        let index = match self.find_index(table_name, index_columns) {
+        let index = match self.find_index(table_name, index_columns, index_type) {
             Some(idx) => idx,
             None => return Ok(None),
         };
 
-        let ranges = Self::build_ranges(index, predicates)?;
-        if ranges.is_empty() {
-            return Ok(None);
-        }
-
-        let mut row_ids = Vec::new();
-        for (start, end) in ranges {
-            for (_k, v) in index.tree.range_scan(&start, &end) {
-                row_ids.push(v);
+        match index.index_type {
+            IndexType::BTree => {
+                let ranges = Self::build_ranges(index, predicates)?;
+                if ranges.is_empty() {
+                    return Ok(None);
+                }
+                Ok(Some(index.lookup_range(&ranges)))
+            }
+            IndexType::Hash => {
+                let Some(key) = Self::build_hash_key(index, predicates)? else {
+                    return Ok(None);
+                };
+                Ok(Some(index.lookup_eq(&key)))
             }
         }
-
-        Ok(Some(row_ids))
     }
 
     fn apply_assignments(
@@ -1421,13 +1467,21 @@ impl Executor {
             .iter_mut()
             .filter(|idx| idx.key.table == table_name)
         {
-            let mut tree = BPlusTree::new();
+            let mut data = match index.index_type {
+                IndexType::BTree => IndexData::BTree(BPlusTree::new()),
+                IndexType::Hash => IndexData::Hash(HashIndex::new()),
+            };
+
             for (row_id, row) in &rows {
                 let key =
                     Self::build_composite_key(row, &index.column_indices, &index.column_types)?;
-                tree.insert(key, *row_id);
+                match &mut data {
+                    IndexData::BTree(tree) => tree.insert(key, *row_id),
+                    IndexData::Hash(hash) => hash.insert(key, *row_id),
+                }
             }
-            index.tree = tree;
+
+            index.data = data;
         }
 
         Ok(())
@@ -1439,6 +1493,7 @@ impl Executor {
             .map(|idx| IndexMetadata {
                 table: idx.key.table.clone(),
                 columns: idx.key.columns.clone(),
+                index_type: idx.index_type,
             })
             .collect()
     }
@@ -1612,10 +1667,15 @@ impl Executor {
         })
     }
 
-    fn find_index(&self, table: &str, columns: &[String]) -> Option<&IndexEntry> {
-        self.indexes
-            .iter()
-            .find(|idx| idx.key.table == table && idx.key.columns == columns)
+    fn find_index(
+        &self,
+        table: &str,
+        columns: &[String],
+        index_type: IndexType,
+    ) -> Option<&IndexEntry> {
+        self.indexes.iter().find(|idx| {
+            idx.key.table == table && idx.key.columns == columns && idx.index_type == index_type
+        })
     }
 
     fn build_ranges(
@@ -1691,14 +1751,40 @@ impl Executor {
         Ok(vec![(start, end)])
     }
 
+    fn build_hash_key(
+        index: &IndexEntry,
+        predicates: &[(String, BinaryOp, Literal)],
+    ) -> io::Result<Option<CompositeKey>> {
+        let mut values = Vec::with_capacity(index.key.columns.len());
+
+        for (i, col_name) in index.key.columns.iter().enumerate() {
+            let pred = predicates.iter().find(|(c, _, _)| c == col_name);
+            let Some((_, op, lit)) = pred else {
+                return Ok(None);
+            };
+
+            if *op != BinaryOp::Eq {
+                return Ok(None);
+            }
+
+            let Some(value) = IndexValue::from_literal(lit, &index.column_types[i]) else {
+                return Ok(None);
+            };
+            values.push(value);
+        }
+
+        Ok(Some(CompositeKey::new(values)))
+    }
+
     fn persist_index_metadata(&self) -> io::Result<()> {
         let path = self.db_path.join("indexes.meta");
         let mut buf = String::new();
         for idx in &self.indexes {
             buf.push_str(&format!(
-                "{}|{}|{}\n",
+                "{}|{}|{}|{}\n",
                 idx.name,
                 idx.key.table,
+                idx.index_type,
                 idx.key.columns.join(",")
             ));
         }
@@ -1713,11 +1799,16 @@ impl Executor {
 
         let data = fs::read_to_string(&path)?;
         for line in data.lines() {
-            let mut parts = line.split('|');
-            let (Some(name), Some(table), Some(cols_str)) =
-                (parts.next(), parts.next(), parts.next())
-            else {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.len() < 3 {
                 continue;
+            }
+
+            let (name, table, index_type, cols_str) = if parts.len() >= 4 {
+                let parsed_type = IndexType::from_str(parts[2]).unwrap_or(IndexType::BTree);
+                (parts[0], parts[1], parsed_type, parts[3])
+            } else {
+                (parts[0], parts[1], IndexType::BTree, parts[2])
             };
 
             let columns: Vec<String> = cols_str
@@ -1759,11 +1850,17 @@ impl Executor {
                 continue;
             }
 
-            let mut tree = BPlusTree::new();
+            let mut data = match index_type {
+                IndexType::BTree => IndexData::BTree(BPlusTree::new()),
+                IndexType::Hash => IndexData::Hash(HashIndex::new()),
+            };
             let mut scan = TableScan::new(table_ref);
             while let Some((row_id, row)) = scan.next()? {
                 let key = Self::build_composite_key(&row, &column_indices, &column_types)?;
-                tree.insert(key, row_id);
+                match &mut data {
+                    IndexData::BTree(tree) => tree.insert(key, row_id),
+                    IndexData::Hash(index) => index.insert(key, row_id),
+                }
             }
 
             self.indexes.push(IndexEntry {
@@ -1774,7 +1871,8 @@ impl Executor {
                 },
                 column_indices,
                 column_types,
-                tree,
+                index_type,
+                data,
             });
         }
 
@@ -1786,6 +1884,7 @@ impl Executor {
             ScanPlan::SeqScan => format!("Seq scan on {}", table),
             ScanPlan::IndexScan {
                 index_columns,
+                index_type,
                 predicates,
             } => {
                 let pred_str = predicates
@@ -1796,8 +1895,9 @@ impl Executor {
                     .collect::<Vec<_>>()
                     .join(" AND ");
                 format!(
-                    "Index scan on {} using ({}) with {}",
+                    "Index scan on {} using {} ({}) with {}",
                     table,
+                    index_type,
                     index_columns.join(", "),
                     pred_str
                 )
@@ -1854,7 +1954,7 @@ impl Executor {
     }
 
     /// Return index metadata currently loaded.
-    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>)> {
+    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType)> {
         self.indexes
             .iter()
             .map(|idx| {
@@ -1862,6 +1962,7 @@ impl Executor {
                     idx.name.clone(),
                     idx.key.table.clone(),
                     idx.key.columns.clone(),
+                    idx.index_type,
                 )
             })
             .collect()

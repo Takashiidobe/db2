@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use db2::sql::ExecutionResult;
+use db2::sql::{ExecutionResult, IndexType};
 
 #[test]
 fn test_create_index_simple() {
@@ -15,10 +15,12 @@ fn test_create_index_simple() {
             index_name,
             table_name,
             columns,
+            index_type,
         } => {
             assert_eq!(index_name, "idx_user_id");
             assert_eq!(table_name, "users");
             assert_eq!(columns, vec!["id"]);
+            assert_eq!(index_type, IndexType::BTree);
         }
         other => panic!("Expected CreateIndex result, got: {:?}", other),
     }
@@ -28,6 +30,26 @@ fn test_create_index_simple() {
     assert_eq!(indexes[0].0, "idx_user_id");
     assert_eq!(indexes[0].1, "users");
     assert_eq!(indexes[0].2, vec!["id"]);
+    assert_eq!(indexes[0].3, IndexType::BTree);
+}
+
+#[test]
+fn test_create_hash_index() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    let result = db.execute_ok("CREATE INDEX idx_user_id_hash ON users USING HASH (id)");
+
+    match result {
+        ExecutionResult::CreateIndex { index_type, .. } => {
+            assert_eq!(index_type, IndexType::Hash);
+        }
+        other => panic!("Expected CreateIndex result, got: {:?}", other),
+    }
+
+    let indexes = db.list_indexes();
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(indexes[0].3, IndexType::Hash);
 }
 
 #[test]
@@ -131,6 +153,31 @@ fn test_create_index_persistence() {
         let indexes = executor.list_indexes();
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].0, "idx_id");
+        assert_eq!(indexes[0].3, IndexType::BTree);
+    }
+}
+
+#[test]
+fn test_create_hash_index_persistence() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let db_path = temp_dir.path().to_path_buf();
+
+    {
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER)").unwrap();
+        executor.execute(stmt).unwrap();
+        let stmt =
+            db2::sql::parse_sql("CREATE INDEX idx_id_hash ON users USING HASH (id)").unwrap();
+        executor.execute(stmt).unwrap();
+        executor.flush_all().unwrap();
+    }
+
+    {
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let indexes = executor.list_indexes();
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].0, "idx_id_hash");
+        assert_eq!(indexes[0].3, IndexType::Hash);
     }
 }
 

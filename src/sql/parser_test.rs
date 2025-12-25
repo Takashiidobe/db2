@@ -1,5 +1,5 @@
 mod tests {
-    use crate::sql::ast::{BinaryOp, Expr, FromClause, Literal, SelectColumn};
+    use crate::sql::ast::{BinaryOp, Expr, FromClause, IndexType, Literal, SelectColumn};
     use crate::sql::parse_sql;
     use crate::sql::parser::{Token, Tokenizer};
     use crate::sql::{DataType, Statement};
@@ -286,6 +286,33 @@ mod tests {
                 }
             }
             _ => panic!("Expected Delete statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_index_default_type() {
+        let stmt = parse_sql("CREATE INDEX idx_test ON items(id)").unwrap();
+        match stmt {
+            Statement::CreateIndex(create) => {
+                assert_eq!(create.index_name, "idx_test");
+                assert_eq!(create.table_name, "items");
+                assert_eq!(create.columns, vec!["id"]);
+                assert_eq!(create.index_type, IndexType::BTree);
+            }
+            _ => panic!("Expected CreateIndex statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_hash_index() {
+        let stmt = parse_sql("CREATE INDEX idx_hash ON items USING HASH (id)").unwrap();
+        match stmt {
+            Statement::CreateIndex(create) => {
+                assert_eq!(create.index_name, "idx_hash");
+                assert_eq!(create.index_type, IndexType::Hash);
+                assert_eq!(create.columns, vec!["id"]);
+            }
+            _ => panic!("Expected CreateIndex statement"),
         }
     }
 }

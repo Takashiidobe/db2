@@ -195,12 +195,45 @@ impl SelectStmt {
     }
 }
 
+/// Supported index types.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IndexType {
+    BTree,
+    Hash,
+}
+
+impl Default for IndexType {
+    fn default() -> Self {
+        IndexType::BTree
+    }
+}
+
+impl std::fmt::Display for IndexType {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            IndexType::BTree => write!(f, "BTREE"),
+            IndexType::Hash => write!(f, "HASH"),
+        }
+    }
+}
+
+impl IndexType {
+    pub fn from_str(value: &str) -> Option<Self> {
+        match value.to_uppercase().as_str() {
+            "BTREE" => Some(IndexType::BTree),
+            "HASH" => Some(IndexType::Hash),
+            _ => None,
+        }
+    }
+}
+
 /// CREATE INDEX statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct CreateIndexStmt {
     pub index_name: String,
     pub table_name: String,
     pub columns: Vec<String>,
+    pub index_type: IndexType,
 }
 
 impl CreateIndexStmt {
@@ -213,6 +246,21 @@ impl CreateIndexStmt {
             index_name: index_name.into(),
             table_name: table_name.into(),
             columns,
+            index_type: IndexType::default(),
+        }
+    }
+
+    pub fn with_type(
+        index_name: impl Into<String>,
+        table_name: impl Into<String>,
+        columns: Vec<String>,
+        index_type: IndexType,
+    ) -> Self {
+        Self {
+            index_name: index_name.into(),
+            table_name: table_name.into(),
+            columns,
+            index_type,
         }
     }
 }

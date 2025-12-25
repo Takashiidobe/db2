@@ -255,6 +255,25 @@ fn test_select_uses_index() {
 }
 
 #[test]
+fn test_select_uses_hash_index_for_equality() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("CREATE INDEX idx_id_hash ON users USING HASH (id)");
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Carol')");
+
+    let result = db.execute_ok("SELECT name FROM users WHERE id = 2");
+    match &result {
+        ExecutionResult::Select { rows, plan, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::String("Bob".to_string()));
+            assert!(plan.iter().any(|p| p.contains("HASH")));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_select_index_range() {
     let mut db = TestDb::new().unwrap();
 
@@ -267,6 +286,25 @@ fn test_select_index_range() {
         ExecutionResult::Select { rows, plan, .. } => {
             assert_eq!(rows.len(), 3);
             assert!(plan.iter().any(|p| p.contains("Index scan")));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_hash_index_not_used_for_range_scan() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE numbers (val INTEGER)");
+    db.execute_ok("CREATE INDEX idx_val_hash ON numbers USING HASH (val)");
+    db.execute_ok("INSERT INTO numbers VALUES (10), (20), (30), (40)");
+
+    let result = db.execute_ok("SELECT * FROM numbers WHERE val > 20");
+    match &result {
+        ExecutionResult::Select { rows, plan, .. } => {
+            assert_eq!(rows.len(), 2);
+            assert!(plan.iter().any(|p| p.contains("Seq scan")));
+            assert!(!plan.iter().any(|p| p.contains("HASH")));
         }
         other => panic!("Expected Select result, got: {:?}", other),
     }
