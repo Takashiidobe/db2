@@ -1725,6 +1725,7 @@ impl Executor {
     }
 
     fn rebuild_indexes_for_table(&mut self, table_name: &str) -> io::Result<()> {
+        let snapshot = self.current_snapshot();
         let rows = {
             let table = self.tables.get_mut(table_name).ok_or_else(|| {
                 io::Error::new(
@@ -1735,7 +1736,10 @@ impl Executor {
 
             let mut scan = TableScan::new(table);
             let mut rows = Vec::new();
-            while let Some((row_id, row)) = scan.next()? {
+            while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    continue;
+                }
                 rows.push((row_id, row));
             }
             rows
