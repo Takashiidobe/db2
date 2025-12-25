@@ -1,5 +1,7 @@
 mod tests {
-    use crate::sql::ast::{BinaryOp, Expr, ForeignKeyRef, FromClause, IndexType, Literal, SelectColumn};
+    use crate::sql::ast::{
+        BinaryOp, ColumnRef, Expr, ForeignKeyRef, FromClause, IndexType, Literal, SelectColumn,
+    };
     use crate::sql::{parse_sql, parse_sql_statements};
     use crate::sql::parser::{Token, Tokenizer};
     use crate::sql::{DataType, Statement, TransactionCommand};
@@ -232,6 +234,28 @@ mod tests {
                     }
                     _ => panic!("Expected binary op"),
                 }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_order_by_limit_offset() {
+        let sql = "SELECT id, name FROM users ORDER BY name DESC, id ASC LIMIT 5 OFFSET 2";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                assert_eq!(select.order_by.len(), 2);
+                assert_eq!(
+                    select.order_by[0].column,
+                    ColumnRef::new(None, "name")
+                );
+                assert!(!select.order_by[0].ascending);
+                assert_eq!(select.order_by[1].column, ColumnRef::new(None, "id"));
+                assert!(select.order_by[1].ascending);
+                assert_eq!(select.limit, Some(5));
+                assert_eq!(select.offset, Some(2));
             }
             _ => panic!("Expected Select statement"),
         }

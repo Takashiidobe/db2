@@ -1,7 +1,8 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
     DropIndexStmt, DropTableStmt, Expr, ForeignKeyRef, FromClause, IndexType, InsertStmt, Literal,
-    SelectColumn, SelectStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
+    OrderByExpr, SelectColumn, SelectStmt, Statement, TransactionCommand, TransactionStmt,
+    UpdateStmt,
 };
 
 /// Parse errors
@@ -49,6 +50,12 @@ pub(crate) enum Token {
     Timestamp,
     Decimal,
     Numeric,
+    Order,
+    By,
+    Limit,
+    Offset,
+    Asc,
+    Desc,
     True,
     False,
     Select,
@@ -116,6 +123,12 @@ impl PartialEq for Token {
             | (Token::Timestamp, Token::Timestamp)
             | (Token::Decimal, Token::Decimal)
             | (Token::Numeric, Token::Numeric)
+            | (Token::Order, Token::Order)
+            | (Token::By, Token::By)
+            | (Token::Limit, Token::Limit)
+            | (Token::Offset, Token::Offset)
+            | (Token::Asc, Token::Asc)
+            | (Token::Desc, Token::Desc)
             | (Token::True, Token::True)
             | (Token::False, Token::False)
             | (Token::Select, Token::Select)
@@ -182,6 +195,12 @@ impl std::fmt::Display for Token {
             Token::Timestamp => write!(f, "TIMESTAMP"),
             Token::Decimal => write!(f, "DECIMAL"),
             Token::Numeric => write!(f, "NUMERIC"),
+            Token::Order => write!(f, "ORDER"),
+            Token::By => write!(f, "BY"),
+            Token::Limit => write!(f, "LIMIT"),
+            Token::Offset => write!(f, "OFFSET"),
+            Token::Asc => write!(f, "ASC"),
+            Token::Desc => write!(f, "DESC"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -479,6 +498,12 @@ impl Tokenizer {
                     "TIMESTAMP" => Token::Timestamp,
                     "DECIMAL" => Token::Decimal,
                     "NUMERIC" => Token::Numeric,
+                    "ORDER" => Token::Order,
+                    "BY" => Token::By,
+                    "LIMIT" => Token::Limit,
+                    "OFFSET" => Token::Offset,
+                    "ASC" => Token::Asc,
+                    "DESC" => Token::Desc,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
@@ -1293,7 +1318,69 @@ impl Parser {
             None
         };
 
-        Ok(SelectStmt::new(columns, from, where_clause))
+        let mut order_by = Vec::new();
+        if matches!(self.current(), Token::Order) {
+            self.advance();
+            self.expect(Token::By)?;
+            loop {
+                let col_ref = self.parse_column_ref()?;
+                let ascending = match self.current() {
+                    Token::Asc => {
+                        self.advance();
+                        true
+                    }
+                    Token::Desc => {
+                        self.advance();
+                        false
+                    }
+                    _ => true,
+                };
+                order_by.push(OrderByExpr::new(col_ref, ascending));
+
+                if matches!(self.current(), Token::Comma) {
+                    self.advance();
+                } else {
+                    break;
+                }
+            }
+        }
+
+        let mut limit = None;
+        let mut offset = None;
+        if matches!(self.current(), Token::Limit) {
+            self.advance();
+            limit = Some(self.parse_non_negative_usize("LIMIT")?);
+        }
+        if matches!(self.current(), Token::Offset) {
+            self.advance();
+            offset = Some(self.parse_non_negative_usize("OFFSET")?);
+        }
+
+        Ok(SelectStmt::new(
+            columns, from, where_clause, order_by, limit, offset,
+        ))
+    }
+
+    fn parse_non_negative_usize(&mut self, label: &str) -> Result<usize, ParseError> {
+        let token = self.current().clone();
+        match token {
+            Token::IntegerLiteral(value) => {
+                self.advance();
+                if value < 0 {
+                    return Err(ParseError::InvalidSyntax(format!(
+                        "{} must be non-negative",
+                        label
+                    )));
+                }
+                value.try_into().map_err(|_| {
+                    ParseError::InvalidSyntax(format!("{} value too large", label))
+                })
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: format!("{} integer literal", label),
+                found: format!("{}", token),
+            }),
+        }
     }
 
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {

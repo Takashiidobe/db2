@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
-    DropTableStmt, Expr, IndexType, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
-    TransactionCommand, TransactionStmt, UpdateStmt,
+    DropTableStmt, Expr, IndexType, InsertStmt, Literal, OrderByExpr, SelectColumn, SelectStmt,
+    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 use super::parser::parse_sql;
 use crate::index::{BPlusTree, HashIndex};
@@ -1307,10 +1307,25 @@ impl Executor {
 
         match plan.from {
             FromClausePlan::Single { table, scan } => {
-                self.execute_select_single_table_plan(plan.columns, table, plan.filter, scan)
+                self.execute_select_single_table_plan(
+                    plan.columns,
+                    table,
+                    plan.filter,
+                    scan,
+                    &stmt.order_by,
+                    stmt.limit,
+                    stmt.offset,
+                )
             }
             FromClausePlan::Join(join_plan) => {
-                self.execute_select_join_plan(plan.columns, join_plan, plan.filter)
+                self.execute_select_join_plan(
+                    plan.columns,
+                    join_plan,
+                    plan.filter,
+                    &stmt.order_by,
+                    stmt.limit,
+                    stmt.offset,
+                )
             }
         }
     }
@@ -1321,11 +1336,54 @@ impl Executor {
         table_name: String,
         where_clause: Option<Expr>,
         scan_plan: ScanPlan,
+        order_by: &[OrderByExpr],
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> io::Result<ExecutionResult> {
         let mut plan_steps = Vec::new();
         plan_steps.push(Self::describe_scan(&table_name, &scan_plan));
         if let Some(ref predicate) = where_clause {
             plan_steps.push(format!("Filter: {}", Self::describe_expr(predicate)));
+        }
+        if !order_by.is_empty() {
+            let order_desc = order_by
+                .iter()
+                .map(|expr| {
+                    format!(
+                        "{} {}",
+                        Self::format_column_ref(&expr.column),
+                        if expr.ascending { "ASC" } else { "DESC" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            plan_steps.push(format!("Order by: {}", order_desc));
+        }
+        if let Some(limit) = limit {
+            plan_steps.push(format!("Limit: {}", limit));
+        }
+        if let Some(offset) = offset {
+            plan_steps.push(format!("Offset: {}", offset));
+        }
+        if !order_by.is_empty() {
+            let order_desc = order_by
+                .iter()
+                .map(|expr| {
+                    format!(
+                        "{} {}",
+                        Self::format_column_ref(&expr.column),
+                        if expr.ascending { "ASC" } else { "DESC" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            plan_steps.push(format!("Order by: {}", order_desc));
+        }
+        if let Some(limit) = limit {
+            plan_steps.push(format!("Limit: {}", limit));
+        }
+        if let Some(offset) = offset {
+            plan_steps.push(format!("Offset: {}", offset));
         }
 
         // Get schema first (before any mutable borrows)
@@ -1419,6 +1477,16 @@ impl Executor {
             }
         }
 
+        let mut result_rows = result_rows;
+        Self::apply_order_limit(
+            &mut result_rows,
+            &columns_meta,
+            &column_indices,
+            order_by,
+            limit,
+            offset,
+        )?;
+
         Ok(ExecutionResult::Select {
             column_names,
             rows: result_rows,
@@ -1432,6 +1500,9 @@ impl Executor {
         columns: SelectColumn,
         join_plan: JoinPlan,
         where_clause: Option<Expr>,
+        order_by: &[OrderByExpr],
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> io::Result<ExecutionResult> {
         // Fetch schemas before mutable borrows
         let left_schema = {
@@ -1485,6 +1556,9 @@ impl Executor {
                 column_indices,
                 column_names,
                 inner_has_index,
+                order_by,
+                limit,
+                offset,
             ),
             JoinStrategy::MergeJoin => self.execute_merge_join(
                 join_plan,
@@ -1494,6 +1568,9 @@ impl Executor {
                 &combined_meta,
                 column_indices,
                 column_names,
+                order_by,
+                limit,
+                offset,
             ),
         }
     }
@@ -1510,6 +1587,9 @@ impl Executor {
         column_indices: Vec<usize>,
         column_names: Vec<String>,
         inner_has_index: bool,
+        order_by: &[OrderByExpr],
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> io::Result<ExecutionResult> {
         let snapshot = self.current_snapshot();
         let current_txn_id = self.current_txn_id;
@@ -1572,6 +1652,26 @@ impl Executor {
         }
         if let Some(ref predicate) = where_clause {
             plan_steps.push(format!("Filter: {}", Self::describe_expr(predicate)));
+        }
+        if !order_by.is_empty() {
+            let order_desc = order_by
+                .iter()
+                .map(|expr| {
+                    format!(
+                        "{} {}",
+                        Self::format_column_ref(&expr.column),
+                        if expr.ascending { "ASC" } else { "DESC" }
+                    )
+                })
+                .collect::<Vec<_>>()
+                .join(", ");
+            plan_steps.push(format!("Order by: {}", order_desc));
+        }
+        if let Some(limit) = limit {
+            plan_steps.push(format!("Limit: {}", limit));
+        }
+        if let Some(offset) = offset {
+            plan_steps.push(format!("Offset: {}", offset));
         }
 
         // If not using index, load right rows once
@@ -1669,6 +1769,16 @@ impl Executor {
             }
         }
 
+        let mut result_rows = result_rows;
+        Self::apply_order_limit(
+            &mut result_rows,
+            combined_meta,
+            &column_indices,
+            order_by,
+            limit,
+            offset,
+        )?;
+
         Ok(ExecutionResult::Select {
             column_names,
             rows: result_rows,
@@ -1686,6 +1796,9 @@ impl Executor {
         combined_meta: &[(Option<String>, String)],
         column_indices: Vec<usize>,
         column_names: Vec<String>,
+        order_by: &[OrderByExpr],
+        limit: Option<usize>,
+        offset: Option<usize>,
     ) -> io::Result<ExecutionResult> {
         let mut plan_steps = Vec::new();
         plan_steps.push(format!(
@@ -1750,6 +1863,16 @@ impl Executor {
                 }
             }
         }
+
+        let mut result_rows = result_rows;
+        Self::apply_order_limit(
+            &mut result_rows,
+            combined_meta,
+            &column_indices,
+            order_by,
+            limit,
+            offset,
+        )?;
 
         Ok(ExecutionResult::Select {
             column_names,
@@ -2163,6 +2286,61 @@ impl Executor {
                 Ok((indices, names))
             }
         }
+    }
+
+    fn apply_order_limit(
+        rows: &mut Vec<Vec<Value>>,
+        columns_meta: &[(Option<String>, String)],
+        column_indices: &[usize],
+        order_by: &[OrderByExpr],
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> io::Result<()> {
+        if !order_by.is_empty() {
+            let mut order_indices = Vec::with_capacity(order_by.len());
+            for expr in order_by {
+                let full_idx = Self::resolve_column_index(columns_meta, &expr.column)?;
+                let projected_idx = column_indices
+                    .iter()
+                    .position(|&idx| idx == full_idx)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "ORDER BY column '{}' must appear in select list",
+                                Self::format_column_ref(&expr.column)
+                            ),
+                        )
+                    })?;
+                order_indices.push((projected_idx, expr.ascending));
+            }
+
+            rows.sort_by(|a, b| {
+                for (idx, asc) in &order_indices {
+                    let ord = a[*idx].cmp(&b[*idx]);
+                    if ord != std::cmp::Ordering::Equal {
+                        return if *asc { ord } else { ord.reverse() };
+                    }
+                }
+                std::cmp::Ordering::Equal
+            });
+        }
+
+        if limit.is_some() || offset.is_some() {
+            let start = offset.unwrap_or(0);
+            if start >= rows.len() {
+                rows.clear();
+                return Ok(());
+            }
+            let end = match limit {
+                Some(limit) => start.saturating_add(limit).min(rows.len()),
+                None => rows.len(),
+            };
+            let sliced = rows[start..end].to_vec();
+            *rows = sliced;
+        }
+
+        Ok(())
     }
 
     fn resolve_column_index(

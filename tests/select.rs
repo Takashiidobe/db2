@@ -219,6 +219,43 @@ fn test_select_where_string() {
 }
 
 #[test]
+fn test_select_order_by_desc() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice'), (3, 'Charlie'), (2, 'Bob')");
+
+    let result = db.execute_ok("SELECT id, name FROM users ORDER BY id DESC");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 3);
+            assert_eq!(rows[0][0], Value::Integer(3));
+            assert_eq!(rows[1][0], Value::Integer(2));
+            assert_eq!(rows[2][0], Value::Integer(1));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_select_limit_offset() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE numbers (val INTEGER)");
+    db.execute_ok("INSERT INTO numbers VALUES (1), (2), (3), (4), (5)");
+
+    let result = db.execute_ok("SELECT val FROM numbers ORDER BY val ASC LIMIT 2 OFFSET 1");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0][0], Value::Integer(2));
+            assert_eq!(rows[1][0], Value::Integer(3));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_select_where_no_matches() {
     let mut db = TestDb::new().unwrap();
 

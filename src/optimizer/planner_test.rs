@@ -18,6 +18,9 @@ mod tests {
                 BinaryOp::Eq,
                 Expr::Literal(Literal::Integer(1)),
             )),
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
         };
 
         let plan = planner.plan_select(&stmt);
@@ -46,6 +49,9 @@ mod tests {
                 BinaryOp::Eq,
                 Expr::Literal(Literal::Integer(1)),
             )),
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
         };
 
         let plan = planner.plan_select(&stmt);
@@ -75,6 +81,9 @@ mod tests {
                 right_column: ColumnRef::new(Some("orders".to_string()), "user_id"),
             },
             where_clause: None,
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
         };
 
         let plan = planner.plan_select(&stmt);
@@ -110,6 +119,9 @@ mod tests {
                 right_column: ColumnRef::new(Some("orders".to_string()), "user_id"),
             },
             where_clause: None,
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
         };
 
         let plan = planner.plan_select(&stmt);
@@ -152,6 +164,9 @@ mod tests {
                     Expr::Literal(Literal::Integer(5)),
                 ),
             )),
+            order_by: Vec::new(),
+            limit: None,
+            offset: None,
         };
 
         let plan = planner.plan_select(&stmt);

@@ -219,20 +219,45 @@ pub enum FromClause {
     },
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct OrderByExpr {
+    pub column: ColumnRef,
+    pub ascending: bool,
+}
+
+impl OrderByExpr {
+    pub fn new(column: ColumnRef, ascending: bool) -> Self {
+        Self { column, ascending }
+    }
+}
+
 /// SELECT statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SelectStmt {
     pub columns: SelectColumn,
     pub from: FromClause,
     pub where_clause: Option<Expr>,
+    pub order_by: Vec<OrderByExpr>,
+    pub limit: Option<usize>,
+    pub offset: Option<usize>,
 }
 
 impl SelectStmt {
-    pub fn new(columns: SelectColumn, from: FromClause, where_clause: Option<Expr>) -> Self {
+    pub fn new(
+        columns: SelectColumn,
+        from: FromClause,
+        where_clause: Option<Expr>,
+        order_by: Vec<OrderByExpr>,
+        limit: Option<usize>,
+        offset: Option<usize>,
+    ) -> Self {
         Self {
             columns,
             from,
             where_clause,
+            order_by,
+            limit,
+            offset,
         }
     }
 }
