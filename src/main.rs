@@ -1,4 +1,4 @@
-use db2::sql::{Executor, parse_sql};
+use db2::sql::{Executor, parse_sql_statements};
 use std::io::{self, Write};
 
 fn main() -> io::Result<()> {
@@ -70,11 +70,15 @@ fn main() -> io::Result<()> {
             break;
         }
 
-        match parse_sql(input) {
-            Ok(stmt) => match executor.execute(stmt) {
-                Ok(result) => println!("{}", result),
-                Err(e) => eprintln!("Execution error: {}", e),
-            },
+        match parse_sql_statements(input) {
+            Ok(stmts) => {
+                for stmt in stmts {
+                    match executor.execute(stmt) {
+                        Ok(result) => println!("{}", result),
+                        Err(e) => eprintln!("Execution error: {}", e),
+                    }
+                }
+            }
             Err(e) => eprintln!("Parse error: {}", e),
         }
     }
