@@ -660,7 +660,16 @@ impl Executor {
                 }
                 self.in_transaction = true;
             }
-            TransactionCommand::Commit | TransactionCommand::Rollback => {}
+            TransactionCommand::Commit => {
+                if !self.in_transaction {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "No active transaction to commit",
+                    ));
+                }
+                self.in_transaction = false;
+            }
+            TransactionCommand::Rollback => {}
         }
 
         Ok(ExecutionResult::Transaction {
