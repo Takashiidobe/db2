@@ -22,9 +22,9 @@ mod tests {
 
         // Check format:
         // 16 bytes (xmin/xmax) + 2 bytes (count=3)
-        // + 8 bytes (int) + (4 + 5) bytes (string "Alice") + 1 byte (bool)
-        // = 16 + 2 + 8 + 9 + 1 = 36 bytes
-        assert_eq!(bytes.len(), 16 + 2 + 8 + (4 + 5) + 1);
+        // + (1 + 8) bytes (int) + (1 + 4 + 5) bytes (string "Alice") + (1 + 1) bytes (bool)
+        // = 16 + 2 + 9 + 10 + 2 = 39 bytes
+        assert_eq!(bytes.len(), 16 + 2 + (1 + 8) + (1 + 4 + 5) + (1 + 1));
     }
 
     #[test]

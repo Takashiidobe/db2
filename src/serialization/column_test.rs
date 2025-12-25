@@ -9,8 +9,8 @@ mod tests {
         let bytes = ColumnSerializer::serialize(&values).unwrap();
 
         // Check format:
-        // 4 bytes (count=3) + 1 byte (type=0) + 3 * 8 bytes (integers) = 29 bytes
-        assert_eq!(bytes.len(), 4 + 1 + 3 * 8);
+        // 4 bytes (count=3) + 1 byte (type=0) + 3 * (1 + 8 bytes) = 32 bytes
+        assert_eq!(bytes.len(), 4 + 1 + 3 * (1 + 8));
     }
 
     #[test]
@@ -18,8 +18,8 @@ mod tests {
         let values = vec![Value::Unsigned(1), Value::Unsigned(2)];
         let bytes = ColumnSerializer::serialize(&values).unwrap();
 
-        // 4 bytes (count=2) + 1 byte (type) + 2 * 8 bytes
-        assert_eq!(bytes.len(), 4 + 1 + 2 * 8);
+        // 4 bytes (count=2) + 1 byte (type) + 2 * (1 + 8 bytes)
+        assert_eq!(bytes.len(), 4 + 1 + 2 * (1 + 8));
     }
 
     #[test]
@@ -27,8 +27,8 @@ mod tests {
         let values = vec![Value::Float(1.5), Value::Float(-2.25)];
         let bytes = ColumnSerializer::serialize(&values).unwrap();
 
-        // 4 bytes (count=2) + 1 byte (type) + 2 * 8 bytes
-        assert_eq!(bytes.len(), 4 + 1 + 2 * 8);
+        // 4 bytes (count=2) + 1 byte (type) + 2 * (1 + 8 bytes)
+        assert_eq!(bytes.len(), 4 + 1 + 2 * (1 + 8));
     }
 
     #[test]
@@ -40,8 +40,8 @@ mod tests {
         let bytes = ColumnSerializer::serialize(&values).unwrap();
 
         // 4 bytes (count) + 1 byte (type) +
-        // (4 + 5) for "hello" + (4 + 5) for "world" = 23 bytes
-        assert_eq!(bytes.len(), 4 + 1 + (4 + 5) + (4 + 5));
+        // 2 * (1 + (4 + 5)) for "hello" and "world" = 25 bytes
+        assert_eq!(bytes.len(), 4 + 1 + 2 * (1 + (4 + 5)));
     }
 
     #[test]
@@ -49,8 +49,8 @@ mod tests {
         let values = vec![Value::Boolean(true), Value::Boolean(false)];
         let bytes = ColumnSerializer::serialize(&values).unwrap();
 
-        // 4 bytes (count) + 1 byte (type) + 2 bytes for booleans
-        assert_eq!(bytes.len(), 4 + 1 + 2);
+        // 4 bytes (count) + 1 byte (type) + 2 * (1 + 1 bytes) for booleans
+        assert_eq!(bytes.len(), 4 + 1 + 2 * (1 + 1));
     }
 
     #[test]
