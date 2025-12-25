@@ -995,6 +995,19 @@ mod tests {
     }
 
     #[test]
+    fn test_begin_creates_snapshot_and_commit_clears_it() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let snapshot = executor.current_snapshot().expect("snapshot");
+        assert!(snapshot.active.is_empty());
+
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+        assert!(executor.current_snapshot().is_none());
+    }
+
+    #[test]
     fn test_commit_clears_transaction_state() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();

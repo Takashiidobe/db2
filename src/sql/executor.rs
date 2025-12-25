@@ -306,6 +306,17 @@ pub struct Executor {
     wal: WalFile,
     /// In-memory log for undo on rollback.
     txn_log: Vec<WalRecord>,
+    /// Active transactions for snapshotting.
+    active_txns: HashSet<TxnId>,
+    /// Per-transaction snapshots.
+    snapshots: HashMap<TxnId, Snapshot>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Snapshot {
+    pub xmin: TxnId,
+    pub xmax: TxnId,
+    pub active: HashSet<TxnId>,
 }
 
 impl Executor {
@@ -344,6 +355,8 @@ impl Executor {
             next_txn_id: 1,
             wal: WalFile::new(wal_path),
             txn_log: Vec::new(),
+            active_txns: HashSet::new(),
+            snapshots: HashMap::new(),
         };
 
         executor.recover_from_wal()?;
@@ -746,6 +759,15 @@ impl Executor {
                     ));
                 }
                 let txn_id = self.allocate_txn_id();
+                let snapshot_active = self.active_txns.clone();
+                let xmin = snapshot_active.iter().copied().min().unwrap_or(txn_id);
+                let snapshot = Snapshot {
+                    xmin,
+                    xmax: self.next_txn_id,
+                    active: snapshot_active.clone(),
+                };
+                self.active_txns.insert(txn_id);
+                self.snapshots.insert(txn_id, snapshot);
                 self.wal.append(&WalRecord::Begin { txn_id })?;
                 self.in_transaction = true;
                 self.current_txn_id = Some(txn_id);
@@ -762,6 +784,8 @@ impl Executor {
                     .current_txn_id
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
                 self.wal.append(&WalRecord::Commit { txn_id })?;
+                self.active_txns.remove(&txn_id);
+                self.snapshots.remove(&txn_id);
                 self.in_transaction = false;
                 self.current_txn_id = None;
                 self.txn_log.clear();
@@ -778,6 +802,8 @@ impl Executor {
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
                 self.undo_transaction()?;
                 self.wal.append(&WalRecord::Rollback { txn_id })?;
+                self.active_txns.remove(&txn_id);
+                self.snapshots.remove(&txn_id);
                 self.in_transaction = false;
                 self.current_txn_id = None;
                 self.txn_log.clear();
@@ -2144,6 +2170,11 @@ impl Executor {
     /// Report whether a transaction is active.
     pub fn in_transaction(&self) -> bool {
         self.in_transaction
+    }
+
+    pub fn current_snapshot(&self) -> Option<Snapshot> {
+        let txn_id = self.current_txn_id?;
+        self.snapshots.get(&txn_id).cloned()
     }
 
     /// Return index metadata currently loaded.
