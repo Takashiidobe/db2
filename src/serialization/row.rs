@@ -34,6 +34,8 @@ impl std::error::Error for RowSerializationError {}
 
 /// Row serialization format:
 /// ```text
+/// [8 bytes: xmin (u64)]
+/// [8 bytes: xmax (u64)]
 /// [2 bytes: column_count (u16)]
 /// [for each column: serialized Value]
 ///
@@ -45,6 +47,18 @@ impl std::error::Error for RowSerializationError {}
 ///   String:  [4 bytes: length (u32)][length bytes: UTF-8 data]
 /// ```
 pub struct RowSerializer;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct RowMetadata {
+    pub xmin: u64,
+    pub xmax: u64,
+}
+
+impl Default for RowMetadata {
+    fn default() -> Self {
+        Self { xmin: 0, xmax: 0 }
+    }
+}
 
 impl RowSerializer {
     /// Serialize a row of values into bytes.
@@ -62,6 +76,14 @@ impl RowSerializer {
         row: &[Value],
         schema: Option<&Schema>,
     ) -> Result<Vec<u8>, RowSerializationError> {
+        Self::serialize_with_metadata(row, schema, RowMetadata::default())
+    }
+
+    pub fn serialize_with_metadata(
+        row: &[Value],
+        schema: Option<&Schema>,
+        metadata: RowMetadata,
+    ) -> Result<Vec<u8>, RowSerializationError> {
         // Validate against schema if provided
         if let Some(schema) = schema {
             schema
@@ -73,6 +95,10 @@ impl RowSerializer {
         }
 
         let mut buf = Vec::new();
+
+        // Write MVCC metadata
+        codec::write_u64(&mut buf, metadata.xmin)?;
+        codec::write_u64(&mut buf, metadata.xmax)?;
 
         // Write column count
         codec::write_u16(&mut buf, row.len() as u16)?;
@@ -104,7 +130,18 @@ impl RowSerializer {
     /// - Data is truncated or malformed
     /// - Column count doesn't match schema
     pub fn deserialize(bytes: &[u8], schema: &Schema) -> Result<Vec<Value>, RowSerializationError> {
+        let (_, values) = Self::deserialize_with_metadata(bytes, schema)?;
+        Ok(values)
+    }
+
+    pub fn deserialize_with_metadata(
+        bytes: &[u8],
+        schema: &Schema,
+    ) -> Result<(RowMetadata, Vec<Value>), RowSerializationError> {
         let mut cursor = Cursor::new(bytes);
+
+        let xmin = codec::read_u64(&mut cursor)?;
+        let xmax = codec::read_u64(&mut cursor)?;
 
         // Read column count
         let column_count = codec::read_u16(&mut cursor)? as usize;
@@ -146,6 +183,6 @@ impl RowSerializer {
             values.push(value);
         }
 
-        Ok(values)
+        Ok((RowMetadata { xmin, xmax }, values))
     }
 }

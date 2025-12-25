@@ -10,4 +10,4 @@ mod column_test;
 mod row_test;
 
 pub use column::{ColumnSerializer, SerializationError};
-pub use row::{RowSerializationError, RowSerializer};
+pub use row::{RowMetadata, RowSerializationError, RowSerializer};

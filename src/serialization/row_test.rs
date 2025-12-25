@@ -21,9 +21,10 @@ mod tests {
         let bytes = RowSerializer::serialize(&row, None).unwrap();
 
         // Check format:
-        // 2 bytes (count=3) + 8 bytes (int) + (4 + 5) bytes (string "Alice") + 1 byte (bool)
-        // = 2 + 8 + 9 + 1 = 20 bytes
-        assert_eq!(bytes.len(), 2 + 8 + (4 + 5) + 1);
+        // 16 bytes (xmin/xmax) + 2 bytes (count=3)
+        // + 8 bytes (int) + (4 + 5) bytes (string "Alice") + 1 byte (bool)
+        // = 16 + 2 + 8 + 9 + 1 = 36 bytes
+        assert_eq!(bytes.len(), 16 + 2 + 8 + (4 + 5) + 1);
     }
 
     #[test]
@@ -180,6 +181,8 @@ mod tests {
 
         // Create bytes with wrong column count
         let mut bytes = Vec::new();
+        codec::write_u64(&mut bytes, 0).unwrap();
+        codec::write_u64(&mut bytes, 0).unwrap();
         codec::write_u16(&mut bytes, 2).unwrap(); // Wrong count
         codec::write_i64(&mut bytes, 1).unwrap();
         codec::write_string(&mut bytes, "Alice").unwrap();
