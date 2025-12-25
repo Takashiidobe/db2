@@ -1,8 +1,9 @@
 use super::ast::{
-    AggregateExpr, AggregateFunc, AggregateTarget, BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt,
-    CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, Expr, ForeignKeyRef,
-    FromClause, IndexType, InsertStmt, Literal, OrderByExpr, SelectColumn, SelectItem, SelectStmt,
-    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
+    AggregateExpr, AggregateFunc, AggregateTarget, AlterTableAction, AlterTableStmt, BinaryOp,
+    ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt, DropIndexStmt,
+    DropTableStmt, Expr, ForeignKeyRef, FromClause, IndexType, InsertStmt, Literal, OrderByExpr,
+    SelectColumn, SelectItem, SelectStmt, Statement, TransactionCommand, TransactionStmt,
+    UpdateStmt,
 };
 
 /// Parse errors
@@ -33,6 +34,7 @@ pub(crate) enum Token {
     // Keywords
     Create,
     Drop,
+    Alter,
     Table,
     Begin,
     Commit,
@@ -41,6 +43,8 @@ pub(crate) enum Token {
     Insert,
     Into,
     Values,
+    Add,
+    Column,
     Integer,
     Varchar,
     Boolean,
@@ -114,6 +118,7 @@ impl PartialEq for Token {
         match (self, other) {
             (Token::Create, Token::Create)
             | (Token::Drop, Token::Drop)
+            | (Token::Alter, Token::Alter)
             | (Token::Table, Token::Table)
             | (Token::Begin, Token::Begin)
             | (Token::Commit, Token::Commit)
@@ -122,6 +127,8 @@ impl PartialEq for Token {
             | (Token::Insert, Token::Insert)
             | (Token::Into, Token::Into)
             | (Token::Values, Token::Values)
+            | (Token::Add, Token::Add)
+            | (Token::Column, Token::Column)
             | (Token::Integer, Token::Integer)
             | (Token::Unsigned, Token::Unsigned)
             | (Token::Float, Token::Float)
@@ -194,6 +201,7 @@ impl std::fmt::Display for Token {
         match self {
             Token::Create => write!(f, "CREATE"),
             Token::Drop => write!(f, "DROP"),
+            Token::Alter => write!(f, "ALTER"),
             Token::Table => write!(f, "TABLE"),
             Token::Begin => write!(f, "BEGIN"),
             Token::Commit => write!(f, "COMMIT"),
@@ -202,6 +210,8 @@ impl std::fmt::Display for Token {
             Token::Insert => write!(f, "INSERT"),
             Token::Into => write!(f, "INTO"),
             Token::Values => write!(f, "VALUES"),
+            Token::Add => write!(f, "ADD"),
+            Token::Column => write!(f, "COLUMN"),
             Token::Integer => write!(f, "INTEGER"),
             Token::Varchar => write!(f, "VARCHAR"),
             Token::Boolean => write!(f, "BOOLEAN"),
@@ -505,6 +515,7 @@ impl Tokenizer {
                 let token = match ident.to_uppercase().as_str() {
                     "CREATE" => Token::Create,
                     "DROP" => Token::Drop,
+                    "ALTER" => Token::Alter,
                     "TABLE" => Token::Table,
                     "BEGIN" => Token::Begin,
                     "COMMIT" => Token::Commit,
@@ -513,6 +524,8 @@ impl Tokenizer {
                     "INSERT" => Token::Insert,
                     "INTO" => Token::Into,
                     "VALUES" => Token::Values,
+                    "ADD" => Token::Add,
+                    "COLUMN" => Token::Column,
                     "INTEGER" => Token::Integer,
                     "UNSIGNED" => Token::Unsigned,
                     "FLOAT" => Token::Float,
@@ -1428,6 +1441,53 @@ impl Parser {
         ))
     }
 
+    fn parse_alter_table(&mut self) -> Result<AlterTableStmt, ParseError> {
+        self.expect(Token::Alter)?;
+        self.expect(Token::Table)?;
+
+        let table_name = match self.current() {
+            Token::Identifier(s) => {
+                let name = s.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "table name".to_string(),
+                    found: format!("{}", self.current()),
+                });
+            }
+        };
+
+        match self.current() {
+            Token::Add => {
+                self.advance();
+                if matches!(self.current(), Token::Column) {
+                    self.advance();
+                }
+                let column_def = self.parse_column_def()?;
+                if column_def.is_primary_key
+                    || column_def.is_unique
+                    || column_def.is_not_null
+                    || column_def.check.is_some()
+                    || column_def.references.is_some()
+                {
+                    return Err(ParseError::InvalidSyntax(
+                        "ALTER TABLE ADD COLUMN does not support constraints yet".to_string(),
+                    ));
+                }
+                Ok(AlterTableStmt::new(
+                    table_name,
+                    AlterTableAction::AddColumn(column_def),
+                ))
+            }
+            _ => Err(ParseError::UnexpectedToken {
+                expected: "ADD".to_string(),
+                found: format!("{}", self.current()),
+            }),
+        }
+    }
+
     fn parse_select_item(&mut self) -> Result<SelectItem, ParseError> {
         let token = self.current().clone();
         match token {
@@ -1531,6 +1591,10 @@ impl Parser {
                         found: format!("{}", token),
                     }),
                 }
+            }
+            Token::Alter => {
+                let stmt = self.parse_alter_table()?;
+                Ok(Statement::AlterTable(stmt))
             }
             Token::Begin => {
                 let stmt = self.parse_transaction_stmt(TransactionCommand::Begin)?;

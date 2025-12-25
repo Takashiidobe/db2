@@ -12,8 +12,8 @@ mod ast_test;
 mod parser_test;
 
 pub use ast::{
-    CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, IndexType, InsertStmt,
-    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
+    AlterTableStmt, CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, IndexType,
+    InsertStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 pub use executor::{ExecutionResult, Executor, Snapshot, TxnState};
 pub use parser::{ParseError, parse_sql, parse_sql_statements};

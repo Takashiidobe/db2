@@ -396,6 +396,28 @@ pub struct DropTableStmt {
     pub table_name: String,
 }
 
+/// ALTER TABLE action
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum AlterTableAction {
+    AddColumn(ColumnDef),
+}
+
+/// ALTER TABLE statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AlterTableStmt {
+    pub table_name: String,
+    pub action: AlterTableAction,
+}
+
+impl AlterTableStmt {
+    pub fn new(table_name: impl Into<String>, action: AlterTableAction) -> Self {
+        Self {
+            table_name: table_name.into(),
+            action,
+        }
+    }
+}
+
 impl DropTableStmt {
     pub fn new(table_name: impl Into<String>) -> Self {
         Self {
@@ -481,6 +503,7 @@ impl TransactionStmt {
 pub enum Statement {
     CreateTable(CreateTableStmt),
     DropTable(DropTableStmt),
+    AlterTable(AlterTableStmt),
     Insert(InsertStmt),
     Select(SelectStmt),
     CreateIndex(CreateIndexStmt),

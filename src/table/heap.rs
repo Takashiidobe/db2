@@ -1,6 +1,6 @@
 use crate::serialization::{RowMetadata, RowSerializer};
 use crate::storage::{BufferPool, PageError, PageId, PageType, SlotId};
-use crate::types::{Schema, Value};
+use crate::types::{Column, Schema, Value};
 use std::io;
 use std::path::Path;
 
@@ -106,8 +106,14 @@ impl HeapTable {
             .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Invalid table name format"))?
             .to_string();
 
-        // Read schema
-        let schema_bytes = metadata_page.get_row(1).ok_or_else(|| {
+        // Read schema (use the last non-empty row after the table name)
+        let mut schema_bytes = None;
+        for slot_id in 1..metadata_page.num_rows() {
+            if let Some(bytes) = metadata_page.get_row(slot_id) {
+                schema_bytes = Some(bytes);
+            }
+        }
+        let schema_bytes = schema_bytes.ok_or_else(|| {
             io::Error::new(io::ErrorKind::InvalidData, "Missing schema in metadata")
         })?;
         let schema = deserialize_schema(schema_bytes)?;
@@ -130,6 +136,31 @@ impl HeapTable {
     /// Get the table schema
     pub fn schema(&self) -> &Schema {
         &self.schema
+    }
+
+    pub fn add_column(&mut self, column: Column) -> io::Result<()> {
+        if self.schema.find_column(column.name()).is_some() {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("Column '{}' already exists", column.name()),
+            ));
+        }
+
+        let mut columns = self.schema.columns().to_vec();
+        columns.push(column);
+        let new_schema = Schema::new(columns);
+        let schema_data = serialize_schema(&new_schema);
+
+        let metadata_page = self.buffer_pool.fetch_page(0)?;
+        if metadata_page.get_row(1).is_some() {
+            metadata_page.delete_row(1).map_err(io::Error::from)?;
+        }
+        metadata_page.add_row(&schema_data).map_err(io::Error::from)?;
+        self.buffer_pool.unpin_page(0, true);
+        self.buffer_pool.flush_page(0)?;
+
+        self.schema = new_schema;
+        Ok(())
     }
 
     /// Insert a row into the table

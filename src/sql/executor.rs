@@ -1,8 +1,8 @@
 use super::ast::{
-    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
-    AggregateExpr, AggregateFunc, AggregateTarget, DropTableStmt, Expr, IndexType, InsertStmt,
-    Literal, OrderByExpr, SelectColumn, SelectItem, SelectStmt, Statement, TransactionCommand,
-    TransactionStmt, UpdateStmt,
+    AggregateExpr, AggregateFunc, AggregateTarget, AlterTableAction, AlterTableStmt, BinaryOp,
+    ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
+    DropTableStmt, Expr, IndexType, InsertStmt, Literal, OrderByExpr, SelectColumn, SelectItem,
+    SelectStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 use super::parser::parse_sql;
 use crate::index::{BPlusTree, HashIndex};
@@ -11,6 +11,7 @@ use crate::optimizer::planner::{
 };
 use crate::serialization::{RowMetadata, RowSerializer};
 use crate::table::{HeapTable, RowId, TableScan};
+use crate::storage::PageError;
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use crate::wal::{WalFile, WalRecord, TxnId};
 use std::collections::{HashMap, HashSet};
@@ -25,6 +26,8 @@ pub enum ExecutionResult {
     CreateTable { table_name: String },
     /// Table dropped successfully
     DropTable { table_name: String },
+    /// Table altered successfully
+    AlterTable { table_name: String },
     /// Row inserted successfully
     Insert { row_ids: Vec<RowId> },
     /// SELECT query result
@@ -58,6 +61,9 @@ impl std::fmt::Display for ExecutionResult {
             }
             ExecutionResult::DropTable { table_name } => {
                 write!(f, "Table '{}' dropped successfully", table_name)
+            }
+            ExecutionResult::AlterTable { table_name } => {
+                write!(f, "Table '{}' altered successfully", table_name)
             }
             ExecutionResult::Insert { row_ids } => {
                 if row_ids.len() == 1 {
@@ -414,6 +420,7 @@ impl Executor {
         match stmt {
             Statement::CreateTable(create) => self.execute_create_table(create),
             Statement::DropTable(drop) => self.execute_drop_table(drop),
+            Statement::AlterTable(alter) => self.execute_alter_table(alter),
             Statement::Insert(insert) => self.execute_insert(insert),
             Statement::Select(select) => self.execute_select(select),
             Statement::CreateIndex(create_index) => self.execute_create_index(create_index),
@@ -584,6 +591,108 @@ impl Executor {
         Ok(ExecutionResult::DropTable {
             table_name: stmt.table_name,
         })
+    }
+
+    fn execute_alter_table(&mut self, stmt: AlterTableStmt) -> io::Result<ExecutionResult> {
+        match stmt.action {
+            AlterTableAction::AddColumn(column_def) => {
+                self.execute_alter_table_add_column(stmt.table_name, column_def)
+            }
+        }
+    }
+
+    fn execute_alter_table_add_column(
+        &mut self,
+        table_name: String,
+        column_def: ColumnDef,
+    ) -> io::Result<ExecutionResult> {
+        if column_def.is_primary_key
+            || column_def.is_unique
+            || column_def.is_not_null
+            || column_def.check.is_some()
+            || column_def.references.is_some()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ALTER TABLE ADD COLUMN does not support constraints yet",
+            ));
+        }
+
+        let existing_rows = {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let mut scan = TableScan::new(table);
+            let mut rows = Vec::new();
+            while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
+                rows.push((row_id, meta, row));
+            }
+            rows
+        };
+
+        let data_type = match column_def.data_type {
+            super::ast::DataType::Integer => DbDataType::Integer,
+            super::ast::DataType::Unsigned => DbDataType::Unsigned,
+            super::ast::DataType::Float => DbDataType::Float,
+            super::ast::DataType::Boolean => DbDataType::Boolean,
+            super::ast::DataType::Varchar => DbDataType::String,
+            super::ast::DataType::Date => DbDataType::Date,
+            super::ast::DataType::Timestamp => DbDataType::Timestamp,
+            super::ast::DataType::Decimal => DbDataType::Decimal,
+        };
+
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.add_column(Column::new(column_def.name.clone(), data_type))?;
+        }
+
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let schema = table.schema().clone();
+            for (row_id, meta, mut row) in existing_rows {
+                row.push(Value::Null);
+                let serialized = RowSerializer::serialize_with_metadata(&row, Some(&schema), meta)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
+                match page.update_row(row_id.slot_id(), &serialized) {
+                    Ok(()) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), true);
+                    }
+                    Err(PageError::PageFull) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), false);
+                        table.delete(row_id)?;
+                        let _new_row_id = table.insert_with_metadata(&row, meta)?;
+                    }
+                    Err(err) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), false);
+                        return Err(io::Error::from(err));
+                    }
+                }
+            }
+        }
+
+        self.rebuild_indexes_for_table(&table_name)?;
+
+        Ok(ExecutionResult::AlterTable { table_name })
     }
 
     /// Execute DELETE statement

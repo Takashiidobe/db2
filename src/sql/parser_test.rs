@@ -318,6 +318,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_alter_table_add_column() {
+        let sql = "ALTER TABLE users ADD COLUMN age INTEGER";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::AlterTable(alter) => match alter.action {
+                crate::sql::ast::AlterTableAction::AddColumn(col) => {
+                    assert_eq!(alter.table_name, "users");
+                    assert_eq!(col.name, "age");
+                    assert_eq!(col.data_type, DataType::Integer);
+                }
+            },
+            _ => panic!("Expected AlterTable statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_single_column() {
         let sql = "CREATE TABLE test (id INTEGER)";
         let stmt = parse_sql(sql).unwrap();
