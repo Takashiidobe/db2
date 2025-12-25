@@ -604,6 +604,9 @@ impl Executor {
             AlterTableAction::RenameColumn { from, to } => {
                 self.execute_alter_table_rename_column(stmt.table_name, from, to)
             }
+            AlterTableAction::RenameTable { to } => {
+                self.execute_alter_table_rename_table(stmt.table_name, to)
+            }
         }
     }
 
@@ -840,6 +843,57 @@ impl Executor {
 
         self.update_constraints_for_column_rename(&table_name, &from, &to)?;
         self.update_index_names_for_column_rename(&table_name, &from, &to)?;
+
+        Ok(ExecutionResult::AlterTable { table_name })
+    }
+
+    fn execute_alter_table_rename_table(
+        &mut self,
+        table_name: String,
+        to: String,
+    ) -> io::Result<ExecutionResult> {
+        if table_name == to {
+            return Ok(ExecutionResult::AlterTable { table_name });
+        }
+        if self.tables.contains_key(&to) {
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("Table '{}' already exists", to),
+            ));
+        }
+
+        let mut table = self.tables.remove(&table_name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Table '{}' does not exist", table_name),
+            )
+        })?;
+
+        let old_path = self.db_path.join(format!("{}.db", table_name));
+        let new_path = self.db_path.join(format!("{}.db", to));
+        if new_path.exists() {
+            self.tables.insert(table_name.clone(), table);
+            return Err(io::Error::new(
+                io::ErrorKind::AlreadyExists,
+                format!("Table file '{}' already exists", new_path.display()),
+            ));
+        }
+
+        if let Err(err) = fs::rename(&old_path, &new_path) {
+            self.tables.insert(table_name.clone(), table);
+            return Err(err);
+        }
+
+        if let Err(err) = table.rename(&to) {
+            let _ = fs::rename(&new_path, &old_path);
+            self.tables.insert(table_name.clone(), table);
+            return Err(err);
+        }
+
+        self.tables.insert(to.clone(), table);
+
+        self.update_index_names_for_table_rename(&table_name, &to)?;
+        self.update_constraints_for_table_rename(&table_name, &to)?;
 
         Ok(ExecutionResult::AlterTable { table_name })
     }
@@ -2772,6 +2826,20 @@ impl Executor {
         Ok(())
     }
 
+    fn update_index_names_for_table_rename(&mut self, from: &str, to: &str) -> io::Result<()> {
+        let mut touched = false;
+        for index in &mut self.indexes {
+            if index.key.table == from {
+                index.key.table = to.to_string();
+                touched = true;
+            }
+        }
+        if touched {
+            self.persist_index_metadata()?;
+        }
+        Ok(())
+    }
+
     fn ensure_no_indexes_on_column(&self, table_name: &str, column: &str) -> io::Result<()> {
         for index in &self.indexes {
             if index.key.table == table_name && index.key.columns.contains(&column.to_string()) {
@@ -2876,6 +2944,26 @@ impl Executor {
             }
         }
         self.persist_constraints_metadata()?;
+        Ok(())
+    }
+
+    fn update_constraints_for_table_rename(&mut self, from: &str, to: &str) -> io::Result<()> {
+        let mut touched = false;
+        if let Some(constraints) = self.constraints.remove(from) {
+            self.constraints.insert(to.to_string(), constraints);
+            touched = true;
+        }
+        for constraints in self.constraints.values_mut() {
+            for fk in &mut constraints.foreign_keys {
+                if fk.ref_table == from {
+                    fk.ref_table = to.to_string();
+                    touched = true;
+                }
+            }
+        }
+        if touched {
+            self.persist_constraints_metadata()?;
+        }
         Ok(())
     }
 

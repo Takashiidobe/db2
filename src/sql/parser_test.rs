@@ -371,6 +371,23 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_alter_table_rename_table() {
+        let sql = "ALTER TABLE users RENAME TO customers";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::AlterTable(alter) => match alter.action {
+                crate::sql::ast::AlterTableAction::RenameTable { to } => {
+                    assert_eq!(alter.table_name, "users");
+                    assert_eq!(to, "customers");
+                }
+                _ => panic!("Expected RenameTable action"),
+            },
+            _ => panic!("Expected AlterTable statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_single_column() {
         let sql = "CREATE TABLE test (id INTEGER)";
         let stmt = parse_sql(sql).unwrap();

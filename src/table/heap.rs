@@ -1,5 +1,5 @@
 use crate::serialization::{RowMetadata, RowSerializer};
-use crate::storage::{BufferPool, PageError, PageId, PageType, SlotId};
+use crate::storage::{BufferPool, Page, PageError, PageId, PageType, SlotId};
 use crate::types::{Column, Schema, Value};
 use std::io;
 use std::path::Path;
@@ -136,6 +136,27 @@ impl HeapTable {
     /// Get the table schema
     pub fn schema(&self) -> &Schema {
         &self.schema
+    }
+
+    pub fn rename(&mut self, new_name: impl Into<String>) -> io::Result<()> {
+        let new_name = new_name.into();
+        let metadata = format!("TABLE:{}\n", new_name);
+        let schema_data = serialize_schema(&self.schema);
+
+        let metadata_page = self.buffer_pool.fetch_page(0)?;
+        let new_page = Page::new(0, PageType::Heap);
+        *metadata_page = new_page;
+        metadata_page
+            .add_row(metadata.as_bytes())
+            .map_err(io::Error::from)?;
+        metadata_page
+            .add_row(&schema_data)
+            .map_err(io::Error::from)?;
+        self.buffer_pool.unpin_page(0, true);
+        self.buffer_pool.flush_page(0)?;
+
+        self.name = new_name;
+        Ok(())
     }
 
     pub fn add_column(&mut self, column: Column) -> io::Result<()> {

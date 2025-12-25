@@ -402,6 +402,7 @@ pub enum AlterTableAction {
     AddColumn(ColumnDef),
     DropColumn(String),
     RenameColumn { from: String, to: String },
+    RenameTable { to: String },
 }
 
 /// ALTER TABLE statement

@@ -1514,6 +1514,26 @@ impl Parser {
             }
             Token::Rename => {
                 self.advance();
+                if matches!(self.current(), Token::To) {
+                    self.advance();
+                    let to_name = match self.current() {
+                        Token::Identifier(name) => {
+                            let name = name.clone();
+                            self.advance();
+                            name
+                        }
+                        _ => {
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "table name".to_string(),
+                                found: format!("{}", self.current()),
+                            });
+                        }
+                    };
+                    return Ok(AlterTableStmt::new(
+                        table_name,
+                        AlterTableAction::RenameTable { to: to_name },
+                    ));
+                }
                 if matches!(self.current(), Token::Column) {
                     self.advance();
                 }
