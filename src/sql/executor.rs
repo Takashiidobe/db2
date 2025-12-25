@@ -2435,6 +2435,76 @@ impl Executor {
         Ok(())
     }
 
+    pub fn vacuum_table(&mut self, table_name: &str) -> io::Result<usize> {
+        if !self.active_txns.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot vacuum with active transactions",
+            ));
+        }
+
+        let txn_states = self.txn_states.clone();
+        let row_ids = {
+            let table = self.tables.get_mut(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            let mut scan = TableScan::new(table);
+            let mut dead_rows = Vec::new();
+            while let Some((row_id, meta, _row)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    None,
+                    None,
+                    &txn_states,
+                ) {
+                    dead_rows.push(row_id);
+                }
+            }
+            dead_rows
+        };
+
+        if row_ids.is_empty() {
+            return Ok(0);
+        }
+
+        let table = self.tables.get_mut(table_name).ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Table '{}' does not exist", table_name),
+            )
+        })?;
+        let mut removed = 0usize;
+        for row_id in row_ids {
+            match table.delete(row_id) {
+                Ok(()) => removed += 1,
+                Err(err)
+                    if err.kind() == io::ErrorKind::NotFound
+                        || err.kind() == io::ErrorKind::UnexpectedEof =>
+                {}
+                Err(err) => return Err(err),
+            }
+        }
+
+        if removed > 0 {
+            self.rebuild_indexes_for_table(table_name)?;
+        }
+
+        Ok(removed)
+    }
+
+    pub fn vacuum_all(&mut self) -> io::Result<usize> {
+        let table_names: Vec<String> = self.tables.keys().cloned().collect();
+        let mut removed = 0usize;
+        for name in table_names {
+            removed += self.vacuum_table(&name)?;
+        }
+        Ok(removed)
+    }
+
     /// Return table names and schemas currently loaded.
     pub fn list_tables(&self) -> Vec<(String, Schema)> {
         self.tables

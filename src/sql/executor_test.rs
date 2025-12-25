@@ -1313,6 +1313,71 @@ mod tests {
     }
 
     #[test]
+    fn test_vacuum_removes_dead_versions() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let creator_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let aborted_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let deleter_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(1), Value::String("Ghost".to_string())],
+                    RowMetadata {
+                        xmin: aborted_id,
+                        xmax: 0,
+                    },
+                )
+                .unwrap();
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(2), Value::String("Gone".to_string())],
+                    RowMetadata {
+                        xmin: creator_id,
+                        xmax: deleter_id,
+                    },
+                )
+                .unwrap();
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(3), Value::String("Alive".to_string())],
+                    RowMetadata {
+                        xmin: creator_id,
+                        xmax: 0,
+                    },
+                )
+                .unwrap();
+        }
+
+        let removed = executor.vacuum_table("users").unwrap();
+        assert_eq!(removed, 2);
+
+        let result = executor.execute(parse_sql("SELECT * FROM users").unwrap()).unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+                assert_eq!(rows[0][0], Value::Integer(3));
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
+    }
+
+    #[test]
     fn test_commit_clears_transaction_state() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
