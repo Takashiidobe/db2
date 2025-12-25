@@ -1,4 +1,4 @@
-use db::sql::{Executor, parse_sql};
+use db2::sql::{Executor, parse_sql};
 use std::io::{self, Write};
 
 fn main() -> io::Result<()> {
