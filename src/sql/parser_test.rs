@@ -317,6 +317,26 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_statement_with_trailing_semicolon() {
+        let stmt = parse_sql("SELECT * FROM users;").unwrap();
+        match stmt {
+            Statement::Select(_) => {}
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_statement_with_multiple_trailing_semicolons() {
+        let stmt = parse_sql("BEGIN;;").unwrap();
+        match stmt {
+            Statement::Transaction(txn) => {
+                assert_eq!(txn.command, TransactionCommand::Begin);
+            }
+            _ => panic!("Expected Transaction statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_begin_transaction() {
         let stmt = parse_sql("BEGIN TRANSACTION").unwrap();
         match stmt {

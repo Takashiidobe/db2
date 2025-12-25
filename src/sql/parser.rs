@@ -59,6 +59,7 @@ pub(crate) enum Token {
     Dot,
     Update,
     Set,
+    Semicolon,
 
     // Symbols
     LeftParen,
@@ -114,6 +115,7 @@ impl PartialEq for Token {
             | (Token::Dot, Token::Dot)
             | (Token::Update, Token::Update)
             | (Token::Set, Token::Set)
+            | (Token::Semicolon, Token::Semicolon)
             | (Token::LeftParen, Token::LeftParen)
             | (Token::RightParen, Token::RightParen)
             | (Token::Comma, Token::Comma)
@@ -166,6 +168,7 @@ impl std::fmt::Display for Token {
             Token::Dot => write!(f, "."),
             Token::Update => write!(f, "UPDATE"),
             Token::Set => write!(f, "SET"),
+            Token::Semicolon => write!(f, ";"),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
             Token::LeftParen => write!(f, "("),
@@ -364,6 +367,10 @@ impl Tokenizer {
             Some(',') => {
                 self.advance();
                 Ok(Token::Comma)
+            }
+            Some(';') => {
+                self.advance();
+                Ok(Token::Semicolon)
             }
             Some('.') => {
                 self.advance();
@@ -1200,5 +1207,15 @@ pub fn parse_sql(sql: &str) -> Result<Statement, ParseError> {
     let mut tokenizer = Tokenizer::new(sql);
     let tokens = tokenizer.tokenize()?;
     let mut parser = Parser::new(tokens);
-    parser.parse_statement()
+    let stmt = parser.parse_statement()?;
+    while matches!(parser.current(), Token::Semicolon) {
+        parser.advance();
+    }
+    if !matches!(parser.current(), Token::Eof) {
+        return Err(ParseError::UnexpectedToken {
+            expected: "end of input".to_string(),
+            found: format!("{}", parser.current()),
+        });
+    }
+    Ok(stmt)
 }
