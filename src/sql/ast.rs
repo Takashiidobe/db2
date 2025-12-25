@@ -400,6 +400,8 @@ pub struct DropTableStmt {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum AlterTableAction {
     AddColumn(ColumnDef),
+    DropColumn(String),
+    RenameColumn { from: String, to: String },
 }
 
 /// ALTER TABLE statement

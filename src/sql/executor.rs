@@ -598,6 +598,12 @@ impl Executor {
             AlterTableAction::AddColumn(column_def) => {
                 self.execute_alter_table_add_column(stmt.table_name, column_def)
             }
+            AlterTableAction::DropColumn(column_name) => {
+                self.execute_alter_table_drop_column(stmt.table_name, column_name)
+            }
+            AlterTableAction::RenameColumn { from, to } => {
+                self.execute_alter_table_rename_column(stmt.table_name, from, to)
+            }
         }
     }
 
@@ -691,6 +697,149 @@ impl Executor {
         }
 
         self.rebuild_indexes_for_table(&table_name)?;
+
+        Ok(ExecutionResult::AlterTable { table_name })
+    }
+
+    fn execute_alter_table_drop_column(
+        &mut self,
+        table_name: String,
+        column_name: String,
+    ) -> io::Result<ExecutionResult> {
+        self.ensure_no_indexes_on_column(&table_name, &column_name)?;
+        self.ensure_no_constraints_on_column(&table_name, &column_name)?;
+        self.ensure_no_fk_references_to_column(&table_name, &column_name)?;
+
+        let existing_rows = {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let schema = table.schema().clone();
+            let (drop_idx, _) = schema.find_column(&column_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Column '{}' not found", column_name),
+                )
+            })?;
+            if schema.column_count() <= 1 {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Cannot drop the last column in a table",
+                ));
+            }
+            let mut scan = TableScan::new(table);
+            let mut rows = Vec::new();
+            while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
+                rows.push((row_id, meta, row));
+            }
+            (drop_idx, rows)
+        };
+
+        let (drop_idx, rows) = existing_rows;
+
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let mut columns = table.schema().columns().to_vec();
+            columns.remove(drop_idx);
+            let new_schema = Schema::new(columns);
+            table.set_schema(new_schema)?;
+        }
+
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let schema = table.schema().clone();
+            for (row_id, meta, mut row) in rows {
+                row.remove(drop_idx);
+                let serialized =
+                    RowSerializer::serialize_with_metadata(&row, Some(&schema), meta)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
+                match page.update_row(row_id.slot_id(), &serialized) {
+                    Ok(()) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), true);
+                    }
+                    Err(PageError::PageFull) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), false);
+                        table.delete(row_id)?;
+                        let _new_row_id = table.insert_with_metadata(&row, meta)?;
+                    }
+                    Err(err) => {
+                        table
+                            .buffer_pool_mut()
+                            .unpin_page(row_id.page_id(), false);
+                        return Err(io::Error::from(err));
+                    }
+                }
+            }
+
+            self.update_index_metadata_for_table(&table_name, &schema)?;
+        }
+
+        self.rebuild_indexes_for_table(&table_name)?;
+
+        Ok(ExecutionResult::AlterTable { table_name })
+    }
+
+    fn execute_alter_table_rename_column(
+        &mut self,
+        table_name: String,
+        from: String,
+        to: String,
+    ) -> io::Result<ExecutionResult> {
+        if from == to {
+            return Ok(ExecutionResult::AlterTable { table_name });
+        }
+
+        self.ensure_no_fk_references_to_column(&table_name, &from)?;
+        self.ensure_no_checks_on_table(&table_name)?;
+
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let mut columns = table.schema().columns().to_vec();
+            let (idx, _) = table
+                .schema()
+                .find_column(&from)
+                .ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Column '{}' not found", from),
+                    )
+                })?;
+            if table.schema().find_column(&to).is_some() {
+                return Err(io::Error::new(
+                    io::ErrorKind::AlreadyExists,
+                    format!("Column '{}' already exists", to),
+                ));
+            }
+            columns[idx] = Column::new(to.clone(), columns[idx].data_type());
+            let new_schema = Schema::new(columns);
+            table.set_schema(new_schema)?;
+        }
+
+        self.update_constraints_for_column_rename(&table_name, &from, &to)?;
+        self.update_index_names_for_column_rename(&table_name, &from, &to)?;
 
         Ok(ExecutionResult::AlterTable { table_name })
     }
@@ -2570,6 +2719,164 @@ impl Executor {
     fn apply_distinct(rows: &mut Vec<Vec<Value>>) {
         let mut seen = std::collections::BTreeSet::new();
         rows.retain(|row| seen.insert(row.clone()));
+    }
+
+    fn update_index_metadata_for_table(
+        &mut self,
+        table_name: &str,
+        schema: &Schema,
+    ) -> io::Result<()> {
+        for index in &mut self.indexes {
+            if index.key.table != table_name {
+                continue;
+            }
+            let mut indices = Vec::with_capacity(index.key.columns.len());
+            let mut types = Vec::with_capacity(index.key.columns.len());
+            for col in &index.key.columns {
+                let (idx, column) = schema.find_column(col).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Column '{}' not found in table '{}'", col, table_name),
+                    )
+                })?;
+                indices.push(idx);
+                types.push(column.data_type());
+            }
+            index.column_indices = indices;
+            index.column_types = types;
+        }
+        self.persist_index_metadata()
+    }
+
+    fn update_index_names_for_column_rename(
+        &mut self,
+        table_name: &str,
+        from: &str,
+        to: &str,
+    ) -> io::Result<()> {
+        let mut touched = false;
+        for index in &mut self.indexes {
+            if index.key.table != table_name {
+                continue;
+            }
+            for col in &mut index.key.columns {
+                if col == from {
+                    *col = to.to_string();
+                    touched = true;
+                }
+            }
+        }
+        if touched {
+            self.persist_index_metadata()?;
+        }
+        Ok(())
+    }
+
+    fn ensure_no_indexes_on_column(&self, table_name: &str, column: &str) -> io::Result<()> {
+        for index in &self.indexes {
+            if index.key.table == table_name && index.key.columns.contains(&column.to_string()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' is indexed by '{}'", column, index.name),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn ensure_no_constraints_on_column(&self, table_name: &str, column: &str) -> io::Result<()> {
+        let Some(constraints) = self.constraints.get(table_name) else {
+            return Ok(());
+        };
+        if constraints.primary_key.as_deref() == Some(column)
+            || constraints.unique.contains(column)
+            || constraints.not_null.contains(column)
+            || constraints
+                .foreign_keys
+                .iter()
+                .any(|fk| fk.column == column)
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!(
+                    "Column '{}' has constraints that must be dropped first",
+                    column
+                ),
+            ));
+        }
+        if !constraints.checks.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ALTER TABLE not supported with CHECK constraints",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_no_checks_on_table(&self, table_name: &str) -> io::Result<()> {
+        if let Some(constraints) = self.constraints.get(table_name)
+            && !constraints.checks.is_empty()
+        {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ALTER TABLE not supported with CHECK constraints",
+            ));
+        }
+        Ok(())
+    }
+
+    fn ensure_no_fk_references_to_column(
+        &self,
+        table_name: &str,
+        column: &str,
+    ) -> io::Result<()> {
+        for (table, constraints) in &self.constraints {
+            for fk in &constraints.foreign_keys {
+                if fk.ref_table == table_name && fk.ref_column == column {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Column '{}.{}' is referenced by '{}.{}'",
+                            table_name, column, table, fk.column
+                        ),
+                    ));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn update_constraints_for_column_rename(
+        &mut self,
+        table_name: &str,
+        from: &str,
+        to: &str,
+    ) -> io::Result<()> {
+        let Some(constraints) = self.constraints.get_mut(table_name) else {
+            return Ok(());
+        };
+        if !constraints.checks.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "ALTER TABLE not supported with CHECK constraints",
+            ));
+        }
+        if constraints.primary_key.as_deref() == Some(from) {
+            constraints.primary_key = Some(to.to_string());
+        }
+        if constraints.unique.remove(from) {
+            constraints.unique.insert(to.to_string());
+        }
+        if constraints.not_null.remove(from) {
+            constraints.not_null.insert(to.to_string());
+        }
+        for fk in &mut constraints.foreign_keys {
+            if fk.column == from {
+                fk.column = to.to_string();
+            }
+        }
+        self.persist_constraints_metadata()?;
+        Ok(())
     }
 
     fn apply_select_items(

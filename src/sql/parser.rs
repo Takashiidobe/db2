@@ -36,6 +36,7 @@ pub(crate) enum Token {
     Drop,
     Alter,
     Table,
+    Rename,
     Begin,
     Commit,
     Rollback,
@@ -68,6 +69,7 @@ pub(crate) enum Token {
     Max,
     Distinct,
     In,
+    To,
     True,
     False,
     Select,
@@ -119,6 +121,7 @@ impl PartialEq for Token {
             (Token::Create, Token::Create)
             | (Token::Drop, Token::Drop)
             | (Token::Alter, Token::Alter)
+            | (Token::Rename, Token::Rename)
             | (Token::Table, Token::Table)
             | (Token::Begin, Token::Begin)
             | (Token::Commit, Token::Commit)
@@ -152,6 +155,7 @@ impl PartialEq for Token {
             | (Token::Max, Token::Max)
             | (Token::Distinct, Token::Distinct)
             | (Token::In, Token::In)
+            | (Token::To, Token::To)
             | (Token::True, Token::True)
             | (Token::False, Token::False)
             | (Token::Select, Token::Select)
@@ -202,6 +206,7 @@ impl std::fmt::Display for Token {
             Token::Create => write!(f, "CREATE"),
             Token::Drop => write!(f, "DROP"),
             Token::Alter => write!(f, "ALTER"),
+            Token::Rename => write!(f, "RENAME"),
             Token::Table => write!(f, "TABLE"),
             Token::Begin => write!(f, "BEGIN"),
             Token::Commit => write!(f, "COMMIT"),
@@ -235,6 +240,7 @@ impl std::fmt::Display for Token {
             Token::Max => write!(f, "MAX"),
             Token::Distinct => write!(f, "DISTINCT"),
             Token::In => write!(f, "IN"),
+            Token::To => write!(f, "TO"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -516,6 +522,7 @@ impl Tokenizer {
                     "CREATE" => Token::Create,
                     "DROP" => Token::Drop,
                     "ALTER" => Token::Alter,
+                    "RENAME" => Token::Rename,
                     "TABLE" => Token::Table,
                     "BEGIN" => Token::Begin,
                     "COMMIT" => Token::Commit,
@@ -549,6 +556,7 @@ impl Tokenizer {
                     "MAX" => Token::Max,
                     "DISTINCT" => Token::Distinct,
                     "IN" => Token::In,
+                    "TO" => Token::To,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
@@ -1481,8 +1489,71 @@ impl Parser {
                     AlterTableAction::AddColumn(column_def),
                 ))
             }
+            Token::Drop => {
+                self.advance();
+                if matches!(self.current(), Token::Column) {
+                    self.advance();
+                }
+                let column_name = match self.current() {
+                    Token::Identifier(name) => {
+                        let name = name.clone();
+                        self.advance();
+                        name
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "column name".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                Ok(AlterTableStmt::new(
+                    table_name,
+                    AlterTableAction::DropColumn(column_name),
+                ))
+            }
+            Token::Rename => {
+                self.advance();
+                if matches!(self.current(), Token::Column) {
+                    self.advance();
+                }
+                let from_name = match self.current() {
+                    Token::Identifier(name) => {
+                        let name = name.clone();
+                        self.advance();
+                        name
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "column name".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                self.expect(Token::To)?;
+                let to_name = match self.current() {
+                    Token::Identifier(name) => {
+                        let name = name.clone();
+                        self.advance();
+                        name
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "column name".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                Ok(AlterTableStmt::new(
+                    table_name,
+                    AlterTableAction::RenameColumn {
+                        from: from_name,
+                        to: to_name,
+                    },
+                ))
+            }
             _ => Err(ParseError::UnexpectedToken {
-                expected: "ADD".to_string(),
+                expected: "ADD, DROP, or RENAME".to_string(),
                 found: format!("{}", self.current()),
             }),
         }

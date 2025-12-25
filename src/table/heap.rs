@@ -149,7 +149,17 @@ impl HeapTable {
         let mut columns = self.schema.columns().to_vec();
         columns.push(column);
         let new_schema = Schema::new(columns);
-        let schema_data = serialize_schema(&new_schema);
+        self.set_schema(new_schema)
+    }
+
+    pub fn set_schema(&mut self, schema: Schema) -> io::Result<()> {
+        self.persist_schema(&schema)?;
+        self.schema = schema;
+        Ok(())
+    }
+
+    fn persist_schema(&mut self, schema: &Schema) -> io::Result<()> {
+        let schema_data = serialize_schema(schema);
 
         let metadata_page = self.buffer_pool.fetch_page(0)?;
         if metadata_page.get_row(1).is_some() {
@@ -158,8 +168,6 @@ impl HeapTable {
         metadata_page.add_row(&schema_data).map_err(io::Error::from)?;
         self.buffer_pool.unpin_page(0, true);
         self.buffer_pool.flush_page(0)?;
-
-        self.schema = new_schema;
         Ok(())
     }
 

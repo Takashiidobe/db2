@@ -329,6 +329,42 @@ mod tests {
                     assert_eq!(col.name, "age");
                     assert_eq!(col.data_type, DataType::Integer);
                 }
+                _ => panic!("Expected AddColumn action"),
+            },
+            _ => panic!("Expected AlterTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_alter_table_drop_column() {
+        let sql = "ALTER TABLE users DROP COLUMN age";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::AlterTable(alter) => match alter.action {
+                crate::sql::ast::AlterTableAction::DropColumn(name) => {
+                    assert_eq!(alter.table_name, "users");
+                    assert_eq!(name, "age");
+                }
+                _ => panic!("Expected DropColumn action"),
+            },
+            _ => panic!("Expected AlterTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_alter_table_rename_column() {
+        let sql = "ALTER TABLE users RENAME COLUMN old_name TO new_name";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::AlterTable(alter) => match alter.action {
+                crate::sql::ast::AlterTableAction::RenameColumn { from, to } => {
+                    assert_eq!(alter.table_name, "users");
+                    assert_eq!(from, "old_name");
+                    assert_eq!(to, "new_name");
+                }
+                _ => panic!("Expected RenameColumn action"),
             },
             _ => panic!("Expected AlterTable statement"),
         }
