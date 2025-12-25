@@ -1241,6 +1241,78 @@ mod tests {
     }
 
     #[test]
+    fn test_delete_write_conflict_aborts_transaction() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let txn_id = executor.current_txn_id().expect("txn id");
+        let snapshot = executor.current_snapshot().expect("snapshot");
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(10), Value::String("Conflict".to_string())],
+                    RowMetadata {
+                        xmin: 0,
+                        xmax: snapshot.xmax,
+                    },
+                )
+                .unwrap();
+        }
+
+        let err = executor
+            .execute(parse_sql("DELETE FROM users WHERE id = 10").unwrap())
+            .unwrap_err();
+        assert!(err.to_string().contains("Write conflict"));
+        assert!(!executor.in_transaction());
+        assert_eq!(
+            executor.transaction_state(txn_id),
+            Some(TxnState::Aborted)
+        );
+    }
+
+    #[test]
+    fn test_update_write_conflict_aborts_transaction() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let txn_id = executor.current_txn_id().expect("txn id");
+        let snapshot = executor.current_snapshot().expect("snapshot");
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(11), Value::String("Conflict".to_string())],
+                    RowMetadata {
+                        xmin: 0,
+                        xmax: snapshot.xmax,
+                    },
+                )
+                .unwrap();
+        }
+
+        let err = executor
+            .execute(parse_sql("UPDATE users SET name = 'X' WHERE id = 11").unwrap())
+            .unwrap_err();
+        assert!(err.to_string().contains("Write conflict"));
+        assert!(!executor.in_transaction());
+        assert_eq!(
+            executor.transaction_state(txn_id),
+            Some(TxnState::Aborted)
+        );
+    }
+
+    #[test]
     fn test_commit_clears_transaction_state() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();

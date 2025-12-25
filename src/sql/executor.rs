@@ -504,6 +504,7 @@ impl Executor {
         let txn_states = self.txn_states.clone();
 
         // Collect target rows
+        let mut conflict_row: Option<RowId> = None;
         let rows_to_delete: Vec<(RowId, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
@@ -516,7 +517,7 @@ impl Executor {
 
             if let Some(row_ids) = row_ids {
                 for row_id in row_ids {
-                    let row = match table.get_with_metadata(row_id) {
+                    let (meta, row) = match table.get_with_metadata(row_id) {
                         Ok((meta, row)) => {
                             if !Self::is_visible_for_snapshot(
                                 &meta,
@@ -526,7 +527,7 @@ impl Executor {
                             ) {
                                 continue;
                             }
-                            row
+                            (meta, row)
                         }
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
@@ -536,6 +537,11 @@ impl Executor {
                         && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
                     {
                         continue;
+                    }
+
+                    if Self::has_write_conflict(&meta, current_txn_id, &txn_states) {
+                        conflict_row = Some(row_id);
+                        break;
                     }
 
                     matches.push((row_id, row));
@@ -556,12 +562,27 @@ impl Executor {
                     {
                         continue;
                     }
+                    if Self::has_write_conflict(&meta, current_txn_id, &txn_states) {
+                        conflict_row = Some(row_id);
+                        break;
+                    }
+
                     matches.push((row_id, row));
                 }
             }
 
             matches
         };
+
+        if let Some(row_id) = conflict_row {
+            if self.in_transaction {
+                self.abort_current_transaction()?;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Write conflict detected on row {:?}", row_id),
+            ));
+        }
 
         // Apply deletions
         let mut rows_deleted = 0;
@@ -692,6 +713,7 @@ impl Executor {
         let current_txn_id = self.current_txn_id;
         let txn_states = self.txn_states.clone();
         let mut rows_updated = 0;
+        let mut conflict_row: Option<RowId> = None;
         let pending_updates: Vec<(RowId, Vec<Value>, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
@@ -704,7 +726,7 @@ impl Executor {
 
             if let Some(row_ids) = row_ids {
                 for row_id in row_ids {
-                    let row = match table.get_with_metadata(row_id) {
+                    let (meta, row) = match table.get_with_metadata(row_id) {
                         Ok((meta, row)) => {
                             if !Self::is_visible_for_snapshot(
                                 &meta,
@@ -714,7 +736,7 @@ impl Executor {
                             ) {
                                 continue;
                             }
-                            row
+                            (meta, row)
                         }
                         Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                         Err(e) => return Err(e),
@@ -728,6 +750,11 @@ impl Executor {
 
                     let new_row =
                         Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
+                    if Self::has_write_conflict(&meta, current_txn_id, &txn_states) {
+                        conflict_row = Some(row_id);
+                        break;
+                    }
+
                     pending.push((row_id, row, new_row));
                 }
             } else {
@@ -749,12 +776,27 @@ impl Executor {
 
                     let new_row =
                         Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
+                    if Self::has_write_conflict(&meta, current_txn_id, &txn_states) {
+                        conflict_row = Some(row_id);
+                        break;
+                    }
+
                     pending.push((row_id, row, new_row));
                 }
             }
 
             pending
         };
+
+        if let Some(row_id) = conflict_row {
+            if self.in_transaction {
+                self.abort_current_transaction()?;
+            }
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                format!("Write conflict detected on row {:?}", row_id),
+            ));
+        }
 
         let wal_context = if pending_updates.is_empty() {
             None
@@ -2350,6 +2392,38 @@ impl Executor {
                 TxnState::Active | TxnState::Aborted => true,
             },
         }
+    }
+
+    fn has_write_conflict(
+        meta: &RowMetadata,
+        current_txn_id: Option<TxnId>,
+        txn_states: &HashMap<TxnId, TxnState>,
+    ) -> bool {
+        let deleter = meta.xmax;
+        if deleter == 0 || Some(deleter) == current_txn_id {
+            return false;
+        }
+        let deleter_state = txn_states
+            .get(&deleter)
+            .copied()
+            .unwrap_or(TxnState::Committed);
+        deleter_state != TxnState::Aborted
+    }
+
+    fn abort_current_transaction(&mut self) -> io::Result<()> {
+        if !self.in_transaction {
+            return Ok(());
+        }
+        let txn_id = self
+            .current_txn_id
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
+        self.wal.append(&WalRecord::Rollback { txn_id })?;
+        self.set_txn_state(txn_id, TxnState::Aborted);
+        self.snapshots.remove(&txn_id);
+        self.in_transaction = false;
+        self.current_txn_id = None;
+        self.txn_log.clear();
+        Ok(())
     }
 
     /// Flush all tables
