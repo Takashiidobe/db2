@@ -15,5 +15,6 @@ pub use ast::{
     CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, IndexType, InsertStmt,
     Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
-pub use executor::{ExecutionResult, Executor, Snapshot};
+pub use executor::{ExecutionResult, Executor, Snapshot, TxnState};
 pub use parser::{ParseError, parse_sql, parse_sql_statements};
+pub use crate::wal::TxnId;

@@ -1,7 +1,7 @@
 mod tests {
     use crate::{
         serialization::RowMetadata,
-        sql::{ExecutionResult, Executor, IndexType, TransactionCommand, parser::parse_sql},
+        sql::{ExecutionResult, Executor, IndexType, TransactionCommand, TxnState, parser::parse_sql},
         table::RowId,
         types::Value,
     };
@@ -1006,6 +1006,45 @@ mod tests {
 
         executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
         assert!(executor.current_snapshot().is_none());
+    }
+
+    #[test]
+    fn test_transaction_state_transitions() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let txn_id = executor.current_txn_id().expect("txn id");
+        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Active));
+
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+        assert_eq!(
+            executor.transaction_state(txn_id),
+            Some(TxnState::Committed)
+        );
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let txn_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+        assert_eq!(
+            executor.transaction_state(txn_id),
+            Some(TxnState::Aborted)
+        );
+    }
+
+    #[test]
+    fn test_transaction_state_recovery_from_wal() {
+        let temp_dir = TempDir::new().unwrap();
+        let txn_id = {
+            let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+            executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+            let txn_id = executor.current_txn_id().expect("txn id");
+            executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+            txn_id
+        };
+
+        let executor = Executor::new(temp_dir.path(), 10).unwrap();
+        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Committed));
     }
 
     #[test]

@@ -311,6 +311,8 @@ pub struct Executor {
     active_txns: HashSet<TxnId>,
     /// Per-transaction snapshots.
     snapshots: HashMap<TxnId, Snapshot>,
+    /// Transaction state table (active/committed/aborted).
+    txn_states: HashMap<TxnId, TxnState>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -318,6 +320,13 @@ pub struct Snapshot {
     pub xmin: TxnId,
     pub xmax: TxnId,
     pub active: HashSet<TxnId>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TxnState {
+    Active,
+    Committed,
+    Aborted,
 }
 
 impl Executor {
@@ -358,6 +367,7 @@ impl Executor {
             txn_log: Vec::new(),
             active_txns: HashSet::new(),
             snapshots: HashMap::new(),
+            txn_states: HashMap::new(),
         };
 
         executor.recover_from_wal()?;
@@ -599,6 +609,7 @@ impl Executor {
         if let Some((txn_id, implicit)) = wal_context {
             if implicit {
                 self.wal.append(&WalRecord::Commit { txn_id })?;
+                self.set_txn_state(txn_id, TxnState::Committed);
             }
         }
 
@@ -781,6 +792,7 @@ impl Executor {
         if let Some((txn_id, implicit)) = wal_context {
             if implicit {
                 self.wal.append(&WalRecord::Commit { txn_id })?;
+                self.set_txn_state(txn_id, TxnState::Committed);
             }
         }
 
@@ -808,9 +820,9 @@ impl Executor {
                     xmax: self.next_txn_id,
                     active: snapshot_active.clone(),
                 };
-                self.active_txns.insert(txn_id);
                 self.snapshots.insert(txn_id, snapshot);
                 self.wal.append(&WalRecord::Begin { txn_id })?;
+                self.set_txn_state(txn_id, TxnState::Active);
                 self.in_transaction = true;
                 self.current_txn_id = Some(txn_id);
                 self.txn_log.clear();
@@ -826,7 +838,7 @@ impl Executor {
                     .current_txn_id
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
                 self.wal.append(&WalRecord::Commit { txn_id })?;
-                self.active_txns.remove(&txn_id);
+                self.set_txn_state(txn_id, TxnState::Committed);
                 self.snapshots.remove(&txn_id);
                 self.in_transaction = false;
                 self.current_txn_id = None;
@@ -844,7 +856,7 @@ impl Executor {
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
                 self.undo_transaction()?;
                 self.wal.append(&WalRecord::Rollback { txn_id })?;
-                self.active_txns.remove(&txn_id);
+                self.set_txn_state(txn_id, TxnState::Aborted);
                 self.snapshots.remove(&txn_id);
                 self.in_transaction = false;
                 self.current_txn_id = None;
@@ -931,6 +943,7 @@ impl Executor {
         if let Some((txn_id, implicit)) = wal_context {
             if implicit {
                 self.wal.append(&WalRecord::Commit { txn_id })?;
+                self.set_txn_state(txn_id, TxnState::Committed);
             }
         }
 
@@ -2264,6 +2277,19 @@ impl Executor {
         self.in_transaction
     }
 
+    pub fn current_txn_id(&self) -> Option<TxnId> {
+        self.current_txn_id
+    }
+
+    pub fn transaction_state(&self, txn_id: TxnId) -> Option<TxnState> {
+        self.txn_states.get(&txn_id).copied()
+    }
+
+    pub fn current_txn_state(&self) -> Option<TxnState> {
+        self.current_txn_id
+            .and_then(|txn_id| self.transaction_state(txn_id))
+    }
+
     pub fn current_snapshot(&self) -> Option<Snapshot> {
         let txn_id = self.current_txn_id?;
         self.snapshots.get(&txn_id).cloned()
@@ -2290,6 +2316,18 @@ impl Executor {
         txn_id
     }
 
+    fn set_txn_state(&mut self, txn_id: TxnId, state: TxnState) {
+        match state {
+            TxnState::Active => {
+                self.active_txns.insert(txn_id);
+            }
+            TxnState::Committed | TxnState::Aborted => {
+                self.active_txns.remove(&txn_id);
+            }
+        }
+        self.txn_states.insert(txn_id, state);
+    }
+
     fn wal_txn_for_mutation(&mut self) -> io::Result<(TxnId, bool)> {
         if self.in_transaction {
             let txn_id = self
@@ -2299,6 +2337,7 @@ impl Executor {
         } else {
             let txn_id = self.allocate_txn_id();
             self.wal.append(&WalRecord::Begin { txn_id })?;
+            self.set_txn_state(txn_id, TxnState::Active);
             Ok((txn_id, true))
         }
     }
@@ -2398,18 +2437,58 @@ impl Executor {
             return Ok(());
         }
 
-        let mut committed = HashSet::new();
+        let mut recovered_states: HashMap<TxnId, TxnState> = HashMap::new();
+        let mut max_txn_id = 0;
         for record in &records {
+            let txn_id = match record {
+                WalRecord::Begin { txn_id }
+                | WalRecord::Commit { txn_id }
+                | WalRecord::Rollback { txn_id }
+                | WalRecord::Insert { txn_id, .. }
+                | WalRecord::Update { txn_id, .. }
+                | WalRecord::Delete { txn_id, .. } => *txn_id,
+            };
+            max_txn_id = max_txn_id.max(txn_id);
             match record {
+                WalRecord::Begin { txn_id } => {
+                    recovered_states.insert(*txn_id, TxnState::Active);
+                }
                 WalRecord::Commit { txn_id } => {
-                    committed.insert(*txn_id);
+                    recovered_states.insert(*txn_id, TxnState::Committed);
                 }
                 WalRecord::Rollback { txn_id } => {
-                    committed.remove(txn_id);
+                    recovered_states.insert(*txn_id, TxnState::Aborted);
                 }
                 _ => {}
             }
         }
+
+        for state in recovered_states.values_mut() {
+            if *state == TxnState::Active {
+                *state = TxnState::Aborted;
+            }
+        }
+
+        self.active_txns.clear();
+        self.txn_states.clear();
+        for (txn_id, state) in recovered_states {
+            self.set_txn_state(txn_id, state);
+        }
+        if max_txn_id > 0 {
+            self.next_txn_id = max_txn_id.saturating_add(1);
+        }
+
+        let committed: HashSet<TxnId> = self
+            .txn_states
+            .iter()
+            .filter_map(|(txn_id, state)| {
+                if *state == TxnState::Committed {
+                    Some(*txn_id)
+                } else {
+                    None
+                }
+            })
+            .collect();
 
         let mut mappings: HashMap<TxnId, HashMap<RowId, RowId>> = HashMap::new();
 
