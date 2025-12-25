@@ -230,3 +230,24 @@ fn test_rollback_undoes_mutations() {
         other => panic!("Expected Select result, got: {:?}", other),
     }
 }
+
+#[test]
+fn test_flush_all_checkpoints_wal() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().to_path_buf();
+    let mut executor = Executor::new(&db_path, 10).unwrap();
+
+    executor
+        .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+        .unwrap();
+    executor
+        .execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap())
+        .unwrap();
+
+    let wal_path = db_path.join("wal.log");
+    assert!(wal_path.exists());
+    assert!(std::fs::metadata(&wal_path).unwrap().len() > 0);
+
+    executor.flush_all().unwrap();
+    assert_eq!(std::fs::metadata(&wal_path).unwrap().len(), 0);
+}

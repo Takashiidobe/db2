@@ -279,6 +279,15 @@ impl WalFile {
 
         Ok(records)
     }
+
+    pub fn truncate(&self) -> io::Result<()> {
+        if !self.path.exists() {
+            return Ok(());
+        }
+
+        let file = std::fs::OpenOptions::new().write(true).open(&self.path)?;
+        file.set_len(0)
+    }
 }
 
 fn to_io_error(err: WalError) -> io::Error {

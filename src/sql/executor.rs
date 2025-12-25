@@ -2129,6 +2129,7 @@ impl Executor {
         for table in self.tables.values_mut() {
             table.flush()?;
         }
+        self.checkpoint_wal()?;
         Ok(())
     }
 
@@ -2177,6 +2178,17 @@ impl Executor {
             self.wal.append(&WalRecord::Begin { txn_id })?;
             Ok((txn_id, true))
         }
+    }
+
+    fn checkpoint_wal(&mut self) -> io::Result<()> {
+        if self.in_transaction {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Cannot checkpoint during an active transaction",
+            ));
+        }
+
+        self.wal.truncate()
     }
 
     fn undo_transaction(&mut self) -> io::Result<()> {
