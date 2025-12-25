@@ -56,15 +56,18 @@ impl RowSerializer {
     ///
     /// # Errors
     /// Returns error if I/O fails or if schema validation fails
-    pub fn serialize(row: &[Value], schema: Option<&Schema>) -> Result<Vec<u8>, RowSerializationError> {
+    pub fn serialize(
+        row: &[Value],
+        schema: Option<&Schema>,
+    ) -> Result<Vec<u8>, RowSerializationError> {
         // Validate against schema if provided
         if let Some(schema) = schema {
-            schema.validate_row(row).map_err(|_| {
-                RowSerializationError::ColumnCountMismatch {
+            schema
+                .validate_row(row)
+                .map_err(|_| RowSerializationError::ColumnCountMismatch {
                     expected: schema.column_count(),
                     found: row.len(),
-                }
-            })?;
+                })?;
         }
 
         let mut buf = Vec::new();

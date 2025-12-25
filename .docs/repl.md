@@ -20,6 +20,10 @@ Startup output includes:
 - `CREATE TABLE <name> (<col> <TYPE>, ...)` - Create a new table
   - Types: `INTEGER`, `BOOLEAN`, `VARCHAR`
   - Example: `CREATE TABLE users (id INTEGER, active BOOLEAN, name VARCHAR)`
+- `DROP TABLE <name>` - Drop an existing table
+  - Removes the table file from disk
+  - Automatically removes all indexes on the table
+  - Example: `DROP TABLE users`
 - `CREATE INDEX <idx_name> ON <table>(<col1>[, <col2> ...])` - Create an index
   - Only INTEGER columns supported
   - Supports composite (multi-column) indexes
@@ -29,6 +33,9 @@ Startup output includes:
 - `INSERT INTO <table> VALUES (<v1>, <v2>, ...)[, (...)]` - Insert rows
   - Supports multiple tuples per statement
   - Example: `INSERT INTO users VALUES (1, true, 'Alice'), (2, false, 'Bob')`
+- `DELETE FROM <table>[ WHERE <pred>]` - Remove rows
+  - Without WHERE, deletes all rows from the table
+  - Uses indexes when predicates match indexed INTEGER columns
 - `SELECT <cols|*> FROM <table>[ JOIN <table> ON <lcol> = <rcol>][ WHERE <pred>]` - Query data
   - Projection: `*` for all columns or comma-separated column list
   - Join: equi-join with `ON` clause
@@ -90,6 +97,7 @@ To reuse an existing database:
 ## Current Limitations
 
 - No `SHOW TABLES` or `DESCRIBE` commands (restart REPL to see schema)
-- No `UPDATE` or `DELETE` statements
+- No `UPDATE` statements (row-level modifications)
+- No `DROP INDEX` statement (must drop and recreate table to remove indexes)
 - No transaction boundaries (`.exit` is the only flush point)
 - All columns must be specified in INSERT (no default values)

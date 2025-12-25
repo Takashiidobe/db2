@@ -148,7 +148,10 @@ impl HeapTable {
     pub fn insert(&mut self, row: &[Value]) -> io::Result<RowId> {
         // Validate row against schema
         self.schema.validate_row(row).map_err(|e| {
-            io::Error::new(io::ErrorKind::InvalidInput, format!("Schema validation failed: {}", e))
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Schema validation failed: {}", e),
+            )
         })?;
 
         // Serialize the row
@@ -212,6 +215,26 @@ impl HeapTable {
         Ok(values)
     }
 
+    /// Delete a row from the table
+    ///
+    /// # Arguments
+    /// * `row_id` - ID of the row to delete
+    ///
+    /// # Errors
+    /// Returns error if:
+    /// - Page cannot be fetched
+    /// - Row doesn't exist
+    pub fn delete(&mut self, row_id: RowId) -> io::Result<()> {
+        let page = self.buffer_pool.fetch_page(row_id.page_id)?;
+
+        page.delete_row(row_id.slot_id)
+            .map_err(|e| io::Error::new(io::ErrorKind::NotFound, e))?;
+
+        self.buffer_pool.unpin_page(row_id.page_id, true);
+
+        Ok(())
+    }
+
     /// Flush all dirty pages to disk
     pub fn flush(&mut self) -> io::Result<()> {
         self.buffer_pool.flush_all()
@@ -269,7 +292,7 @@ pub(crate) fn deserialize_schema(bytes: &[u8]) -> io::Result<Schema> {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,
                     format!("Invalid data type: {}", type_byte),
-                ))
+                ));
             }
         };
         columns.push(Column::new(name, data_type));

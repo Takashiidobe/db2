@@ -1,6 +1,6 @@
 use super::ast::{
-    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, Expr, InsertStmt, Literal, SelectColumn,
-    SelectStmt, Statement,
+    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
+    DropTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
 };
 use crate::index::BPlusTree;
 use crate::optimizer::planner::{
@@ -18,6 +18,8 @@ use std::path::{Path, PathBuf};
 pub enum ExecutionResult {
     /// Table created successfully
     CreateTable { table_name: String },
+    /// Table dropped successfully
+    DropTable { table_name: String },
     /// Row inserted successfully
     Insert { row_ids: Vec<RowId> },
     /// SELECT query result
@@ -32,6 +34,10 @@ pub enum ExecutionResult {
         table_name: String,
         columns: Vec<String>,
     },
+    /// Index dropped successfully
+    DropIndex { index_name: String },
+    /// Rows deleted successfully
+    Delete { rows_deleted: usize },
 }
 
 impl std::fmt::Display for ExecutionResult {
@@ -39,6 +45,9 @@ impl std::fmt::Display for ExecutionResult {
         match self {
             ExecutionResult::CreateTable { table_name } => {
                 write!(f, "Table '{}' created successfully", table_name)
+            }
+            ExecutionResult::DropTable { table_name } => {
+                write!(f, "Table '{}' dropped successfully", table_name)
             }
             ExecutionResult::Insert { row_ids } => {
                 if row_ids.len() == 1 {
@@ -91,6 +100,16 @@ impl std::fmt::Display for ExecutionResult {
                     table_name,
                     columns.join(", ")
                 )
+            }
+            ExecutionResult::DropIndex { index_name } => {
+                write!(f, "Index '{}' dropped successfully", index_name)
+            }
+            ExecutionResult::Delete { rows_deleted } => {
+                if *rows_deleted == 1 {
+                    write!(f, "1 row deleted")
+                } else {
+                    write!(f, "{} rows deleted", rows_deleted)
+                }
             }
         }
     }
@@ -209,9 +228,12 @@ impl Executor {
     pub fn execute(&mut self, stmt: Statement) -> io::Result<ExecutionResult> {
         match stmt {
             Statement::CreateTable(create) => self.execute_create_table(create),
+            Statement::DropTable(drop) => self.execute_drop_table(drop),
             Statement::Insert(insert) => self.execute_insert(insert),
             Statement::Select(select) => self.execute_select(select),
             Statement::CreateIndex(create_index) => self.execute_create_index(create_index),
+            Statement::DropIndex(drop_index) => self.execute_drop_index(drop_index),
+            Statement::Delete(delete) => self.execute_delete(delete),
         }
     }
 
@@ -251,6 +273,133 @@ impl Executor {
         self.tables.insert(stmt.table_name, table);
 
         Ok(ExecutionResult::CreateTable { table_name })
+    }
+
+    /// Execute DROP TABLE statement
+    fn execute_drop_table(&mut self, stmt: DropTableStmt) -> io::Result<ExecutionResult> {
+        // Check if table exists
+        if !self.tables.contains_key(&stmt.table_name) {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("Table '{}' does not exist", stmt.table_name),
+            ));
+        }
+
+        // Remove table from catalog (this also drops the HeapTable, flushing any dirty pages)
+        self.tables.remove(&stmt.table_name);
+
+        // Remove any indexes that reference this table
+        self.indexes.retain(|idx| idx.key.table != stmt.table_name);
+
+        // Persist updated index metadata
+        self.persist_index_metadata()?;
+
+        // Delete the table file from disk
+        let table_path = self.db_path.join(format!("{}.db", stmt.table_name));
+        if table_path.exists() {
+            fs::remove_file(table_path)?;
+        }
+
+        Ok(ExecutionResult::DropTable {
+            table_name: stmt.table_name,
+        })
+    }
+
+    /// Execute DELETE statement
+    fn execute_delete(&mut self, stmt: DeleteStmt) -> io::Result<ExecutionResult> {
+        let table_name = stmt.table_name;
+        let where_clause = stmt.where_clause;
+
+        // Validate table exists and capture schema for predicate evaluation
+        let schema = {
+            let table = self.tables.get(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+        let columns_meta = Self::build_column_metadata_for_table(&table_name, &schema);
+
+        // Choose scan strategy using existing planner
+        let planner = Planner::new(self.index_metadata());
+        let scan_plan = planner.plan_scan(&table_name, where_clause.as_ref());
+        let row_ids = match scan_plan {
+            ScanPlan::IndexScan {
+                index_columns,
+                predicates,
+            } => self.index_scan(&table_name, &index_columns, &predicates)?,
+            ScanPlan::SeqScan => None,
+        };
+
+        // Collect target rows
+        let rows_to_delete: Vec<RowId> = {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            let mut matches = Vec::new();
+
+            if let Some(row_ids) = row_ids {
+                for row_id in row_ids {
+                    let row = match table.get(row_id) {
+                        Ok(row) => row,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e),
+                    };
+
+                    if let Some(ref expr) = where_clause
+                        && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
+                    {
+                        continue;
+                    }
+
+                    matches.push(row_id);
+                }
+            } else {
+                let mut scan = TableScan::new(table);
+                while let Some((row_id, row)) = scan.next()? {
+                    if let Some(ref expr) = where_clause
+                        && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
+                    {
+                        continue;
+                    }
+                    matches.push(row_id);
+                }
+            }
+
+            matches
+        };
+
+        // Apply deletions
+        let mut rows_deleted = 0;
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            for row_id in rows_to_delete {
+                match table.delete(row_id) {
+                    Ok(()) => rows_deleted += 1,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        // Rebuild indexes to drop stale entries
+        if rows_deleted > 0 {
+            self.rebuild_indexes_for_table(&table_name)?;
+        }
+
+        Ok(ExecutionResult::Delete { rows_deleted })
     }
 
     /// Execute INSERT statement
@@ -391,6 +540,31 @@ impl Executor {
             index_name: stmt.index_name,
             table_name: stmt.table_name,
             columns: stmt.columns,
+        })
+    }
+
+    /// Execute DROP INDEX statement
+    fn execute_drop_index(&mut self, stmt: DropIndexStmt) -> io::Result<ExecutionResult> {
+        // Find the index by name
+        let index_pos = self
+            .indexes
+            .iter()
+            .position(|idx| idx.name == stmt.index_name)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Index '{}' does not exist", stmt.index_name),
+                )
+            })?;
+
+        // Remove the index
+        self.indexes.remove(index_pos);
+
+        // Persist updated index metadata
+        self.persist_index_metadata()?;
+
+        Ok(ExecutionResult::DropIndex {
+            index_name: stmt.index_name,
         })
     }
 
@@ -943,6 +1117,39 @@ impl Executor {
         self.tables.get_mut(name)
     }
 
+    fn rebuild_indexes_for_table(&mut self, table_name: &str) -> io::Result<()> {
+        let rows = {
+            let table = self.tables.get_mut(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            let mut scan = TableScan::new(table);
+            let mut rows = Vec::new();
+            while let Some((row_id, row)) = scan.next()? {
+                rows.push((row_id, row));
+            }
+            rows
+        };
+
+        for index in self
+            .indexes
+            .iter_mut()
+            .filter(|idx| idx.key.table == table_name)
+        {
+            let mut tree = BPlusTree::new();
+            for (row_id, row) in &rows {
+                let key = Self::build_composite_key(row, &index.column_indices)?;
+                tree.insert(key, *row_id);
+            }
+            index.tree = tree;
+        }
+
+        Ok(())
+    }
+
     fn index_metadata(&self) -> Vec<IndexMetadata> {
         self.indexes
             .iter()
@@ -1055,8 +1262,8 @@ impl Executor {
         table_name: &str,
         col_ref: &ColumnRef,
     ) -> io::Result<usize> {
-        if let Some(ref table) = col_ref.table {
-            if table != table_name {
+        if let Some(ref table) = col_ref.table
+            && table != table_name {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
                     format!(
@@ -1065,7 +1272,6 @@ impl Executor {
                     ),
                 ));
             }
-        }
 
         schema
             .find_column(&col_ref.column)
@@ -1099,7 +1305,7 @@ impl Executor {
 
     fn find_index_on_first_column(&self, table: &str, column: &str) -> Option<&IndexEntry> {
         self.indexes.iter().find(|idx| {
-            idx.key.table == table && idx.key.columns.first().map_or(false, |c| c == column)
+            idx.key.table == table && idx.key.columns.first().is_some_and(|c| c == column)
         })
     }
 

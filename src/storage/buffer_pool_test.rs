@@ -146,10 +146,7 @@ fn test_flush_all() {
         let mut pool = BufferPool::new(10, &path).unwrap();
         for i in 0..5 {
             let page = pool.fetch_page(i).unwrap();
-            assert_eq!(
-                page.get_row(0).unwrap(),
-                format!("Page {}", i).as_bytes()
-            );
+            assert_eq!(page.get_row(0).unwrap(), format!("Page {}", i).as_bytes());
         }
     }
 }

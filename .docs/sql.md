@@ -6,6 +6,11 @@
 - `CREATE TABLE name (col TYPE [, ...])`
   - Defines table schema with column names and types
   - Table files are created at `./data/<name>.db`
+- `DROP TABLE name`
+  - Removes a table and all associated data
+  - Deletes the `.db` file from disk
+  - Automatically removes all indexes on the table
+  - Updates `indexes.meta` to remove orphaned index definitions
 - `CREATE INDEX idx_name ON table(col1[, col2 ...])`
   - Creates an in-memory B+Tree index
   - Supports composite (multi-column) keys
@@ -18,6 +23,10 @@
   - Multiple tuples per statement supported
   - All columns must be provided (no partial inserts)
   - Values are validated against schema before insertion
+- `DELETE FROM name [WHERE <pred>]`
+  - Removes rows matching an optional WHERE clause
+  - Omitting WHERE deletes all rows
+  - Uses indexes when predicates match indexed columns and rebuilds affected indexes after deletion
 - `SELECT <columns|*> FROM <table> [JOIN <table> ON <lcol> = <rcol>] [WHERE <pred>]`
   - Query data with optional filtering and joins
   - Prints explain-style plan before results
@@ -81,7 +90,10 @@ Optional filter with predicates:
 - Aggregates (COUNT, SUM, AVG, MIN, MAX)
 - GROUP BY, HAVING, ORDER BY, LIMIT, OFFSET
 - DISTINCT
-- UPDATE or DELETE statements
+- UPDATE statements (row-level modifications)
+- DROP INDEX (only DROP TABLE is supported)
+- ALTER TABLE (schema modifications)
+- TRUNCATE TABLE (use DROP TABLE then CREATE TABLE)
 - Column-column comparisons in WHERE (only in JOIN ON)
 - Non-equi joins (e.g., JOIN ON a.x < b.y)
 - Outer joins (LEFT, RIGHT, FULL)
@@ -95,6 +107,7 @@ Optional filter with predicates:
 - Indexes are in-memory (rebuilt on startup)
 - No partial or filtered indexes
 - No index hints or forced index usage
+- No DROP INDEX (indexes are automatically removed when table is dropped)
 
 ### Query Execution
 - Joins use nested loops or merge join (no hash join)

@@ -63,7 +63,11 @@ impl std::fmt::Display for PageError {
             PageError::PageFull => write!(f, "Page is full"),
             PageError::InvalidSlotId(id) => write!(f, "Invalid slot ID: {}", id),
             PageError::InvalidPageSize { expected, found } => {
-                write!(f, "Invalid page size: expected {}, found {}", expected, found)
+                write!(
+                    f,
+                    "Invalid page size: expected {}, found {}",
+                    expected, found
+                )
             }
         }
     }
@@ -142,10 +146,14 @@ impl Page {
         let mut cursor = Cursor::new(&mut self.data[..]);
         use std::io::Write;
 
-        cursor.write_all(&(self.page_type as u16).to_le_bytes()).unwrap();
+        cursor
+            .write_all(&(self.page_type as u16).to_le_bytes())
+            .unwrap();
         cursor.write_all(&self.page_id.to_le_bytes()).unwrap();
         cursor.write_all(&self.num_rows.to_le_bytes()).unwrap();
-        cursor.write_all(&self.free_space_offset.to_le_bytes()).unwrap();
+        cursor
+            .write_all(&self.free_space_offset.to_le_bytes())
+            .unwrap();
     }
 
     /// Read the page header from the data array
@@ -251,7 +259,8 @@ impl Page {
     /// Returns `PageError::InvalidSlotId` if the slot doesn't exist
     /// Returns `PageError::PageFull` if the new data is larger than the old data
     pub fn update_row(&mut self, slot_id: SlotId, row_data: &[u8]) -> Result<(), PageError> {
-        let entry = self.read_slot_entry(slot_id)
+        let entry = self
+            .read_slot_entry(slot_id)
             .ok_or(PageError::InvalidSlotId(slot_id))?;
 
         // Check that new data fits in the allocated space
@@ -283,12 +292,37 @@ impl Page {
 
     /// Get a row from the page by its SlotId
     ///
-    /// Returns a reference to the row data, or None if the slot is invalid
+    /// Returns a reference to the row data, or None if the slot is invalid or deleted
     pub fn get_row(&self, slot_id: SlotId) -> Option<&[u8]> {
         let entry = self.read_slot_entry(slot_id)?;
+        // Treat length 0 as deleted row
+        if entry.length == 0 {
+            return None;
+        }
         let start = entry.offset as usize;
         let end = start + entry.length as usize;
         Some(&self.data[start..end])
+    }
+
+    /// Delete a row from the page by marking it as deleted
+    ///
+    /// This doesn't reclaim space, but marks the slot as deleted by setting length to 0
+    ///
+    /// # Errors
+    /// Returns `PageError::InvalidSlotId` if the slot doesn't exist
+    pub fn delete_row(&mut self, slot_id: SlotId) -> Result<(), PageError> {
+        let entry = self
+            .read_slot_entry(slot_id)
+            .ok_or(PageError::InvalidSlotId(slot_id))?;
+
+        // Mark as deleted by setting length to 0
+        let deleted_entry = SlotEntry {
+            offset: entry.offset,
+            length: 0,
+        };
+        self.write_slot_entry(slot_id, deleted_entry);
+
+        Ok(())
     }
 
     /// Serialize the page to bytes

@@ -19,7 +19,9 @@ This repository implements an educational SQL database in Rust. It features a RE
 - **Data types**: `INTEGER` (i64), `BOOLEAN`, `VARCHAR` (UTF-8 strings).
 - **SQL statements**:
   - `CREATE TABLE` with column definitions
+  - `DROP TABLE` to remove tables and associated indexes
   - `INSERT INTO ... VALUES (...)` (supports multiple tuples per statement)
+  - `DELETE FROM ... [WHERE ...]` for row removal
   - `SELECT` with projection (`*` or column list), optional `WHERE` clause, and `JOIN`
   - `CREATE INDEX` over one or more integer columns
 - **Indexing**: In-memory B+Tree indexes with composite-key support. Indexes are persisted as metadata in `./data/indexes.meta` and rebuilt on startup by scanning table data.
@@ -44,7 +46,8 @@ This repository implements an educational SQL database in Rust. It features a RE
 - **Volcano-style iterator model**: Sequential scans and index scans produce rows on demand.
 - **Nested-loop joins**: Outer table drives inner lookups. When inner table has an index on the join column, uses index lookups instead of full scans.
 - **Merge joins**: Used when both tables have indexes on their join columns.
-- **No updates or deletes**: Tables are append-only after inserts.
+- **DDL operations**: Tables can be dropped, which removes the table file and all associated indexes.
+- **No row-level updates**: Tables support deletions via tombstoned slots but not in-place updates.
 
 ### Limitations
 - No transaction support or concurrency control.

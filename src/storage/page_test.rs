@@ -114,7 +114,7 @@ mod tests {
     fn test_empty_row() {
         let mut page = Page::new(1, PageType::Heap);
         let slot_id = page.add_row(b"").unwrap();
-        assert_eq!(page.get_row(slot_id).unwrap(), b"");
+        assert!(page.get_row(slot_id).is_none(), "Empty rows are treated as deleted");
     }
 
     #[test]

@@ -1,4 +1,4 @@
-use super::heap::{deserialize_schema, serialize_schema, HeapTable};
+use super::heap::{HeapTable, deserialize_schema, serialize_schema};
 use crate::types::{Column, DataType, Schema, Value};
 use tempfile::NamedTempFile;
 
@@ -137,10 +137,7 @@ fn test_multiple_pages() {
     // Insert many rows to fill multiple pages
     let mut row_ids = Vec::new();
     for i in 0..100 {
-        let row = vec![
-            Value::Integer(i),
-            Value::String(format!("Data row {}", i)),
-        ];
+        let row = vec![Value::Integer(i), Value::String(format!("Data row {}", i))];
         row_ids.push(table.insert(&row).unwrap());
     }
 
@@ -148,10 +145,7 @@ fn test_multiple_pages() {
     for (i, row_id) in row_ids.iter().enumerate() {
         let retrieved = table.get(*row_id).unwrap();
         assert_eq!(retrieved[0], Value::Integer(i as i64));
-        assert_eq!(
-            retrieved[1],
-            Value::String(format!("Data row {}", i))
-        );
+        assert_eq!(retrieved[1], Value::String(format!("Data row {}", i)));
     }
 }
 

@@ -36,7 +36,11 @@ impl<'a> TableScan<'a> {
 
         loop {
             // Try to fetch the current page
-            let page = match self.table.buffer_pool_mut().fetch_page(self.current_page_id) {
+            let page = match self
+                .table
+                .buffer_pool_mut()
+                .fetch_page(self.current_page_id)
+            {
                 Ok(page) => page,
                 Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => {
                     // No more pages

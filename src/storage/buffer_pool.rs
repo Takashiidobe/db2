@@ -119,14 +119,15 @@ impl BufferPool {
     /// * `is_dirty` - Whether the page was modified
     pub fn unpin_page(&mut self, page_id: PageId, is_dirty: bool) {
         if let Some(&frame_id) = self.page_table.get(&page_id)
-            && let Some(frame) = &mut self.frames[frame_id] {
-                if frame.pin_count > 0 {
-                    frame.pin_count -= 1;
-                }
-                if is_dirty {
-                    frame.is_dirty = true;
-                }
+            && let Some(frame) = &mut self.frames[frame_id]
+        {
+            if frame.pin_count > 0 {
+                frame.pin_count -= 1;
             }
+            if is_dirty {
+                frame.is_dirty = true;
+            }
+        }
     }
 
     /// Flush a specific page to disk
@@ -145,10 +146,11 @@ impl BufferPool {
             .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "Page not in buffer pool"))?;
 
         if let Some(frame) = &mut self.frames[*frame_id]
-            && frame.is_dirty {
-                self.disk_manager.write_page(&frame.page)?;
-                frame.is_dirty = false;
-            }
+            && frame.is_dirty
+        {
+            self.disk_manager.write_page(&frame.page)?;
+            frame.is_dirty = false;
+        }
 
         Ok(())
     }
@@ -186,10 +188,11 @@ impl BufferPool {
         // Iterate from front (least recently used) to back
         for &frame_id in &self.lru_list {
             if let Some(frame) = &self.frames[frame_id]
-                && frame.pin_count == 0 {
-                    // Found a victim - evict it
-                    return self.evict_frame(frame_id);
-                }
+                && frame.pin_count == 0
+            {
+                // Found a victim - evict it
+                return self.evict_frame(frame_id);
+            }
         }
 
         Err(io::Error::new(

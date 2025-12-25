@@ -133,9 +133,10 @@ impl Planner {
         }
     }
 
-    fn plan_scan(&self, table: &str, filter: Option<&Expr>) -> ScanPlan {
+    /// Choose a scan strategy for a single table based on available indexes and predicates.
+    pub fn plan_scan(&self, table: &str, filter: Option<&Expr>) -> ScanPlan {
         let predicates = filter
-            .map(|expr| extract_indexable_predicates(expr))
+            .map(extract_indexable_predicates)
             .unwrap_or_default();
 
         let table_indexes: Vec<&IndexMetadata> = self
@@ -146,7 +147,7 @@ impl Planner {
 
         let table_preds: Vec<(String, BinaryOp, Literal)> = predicates
             .into_iter()
-            .filter(|(col, _, _)| col.table.as_deref().map_or(true, |t| t == table))
+            .filter(|(col, _, _)| col.table.as_deref().is_none_or(|t| t == table))
             .map(|(col, op, lit)| (col.column, op, lit))
             .collect();
 
@@ -167,7 +168,7 @@ impl Planner {
 
             if best
                 .as_ref()
-                .map_or(true, |(_, b_used)| used.len() > b_used.len())
+                .is_none_or(|(_, b_used)| used.len() > b_used.len())
             {
                 best = Some((idx, used));
             }

@@ -86,10 +86,7 @@ fn test_scan_many_rows() {
 
     // Insert many rows
     for i in 0..50 {
-        let row = vec![
-            Value::Integer(i),
-            Value::String(format!("Row {}", i)),
-        ];
+        let row = vec![Value::Integer(i), Value::String(format!("Row {}", i))];
         table.insert(&row).unwrap();
     }
 
@@ -134,9 +131,10 @@ fn test_scan_multiple_pages() {
         assert_eq!(values[1], Value::String(large_string.clone()));
 
         if let Some(last_pid) = last_page_id
-            && row_id.page_id() != last_pid {
-                seen_multiple_pages = true;
-            }
+            && row_id.page_id() != last_pid
+        {
+            seen_multiple_pages = true;
+        }
         last_page_id = Some(row_id.page_id());
 
         count += 1;

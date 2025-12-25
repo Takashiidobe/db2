@@ -1,10 +1,10 @@
-pub mod value;
 pub mod schema;
+pub mod value;
 
-#[cfg(test)]
-mod value_test;
 #[cfg(test)]
 mod schema_test;
+#[cfg(test)]
+mod value_test;
 
-pub use value::Value;
 pub use schema::{Column, DataType, Schema, SchemaError};
+pub use value::Value;

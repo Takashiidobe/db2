@@ -197,11 +197,58 @@ impl CreateIndexStmt {
     }
 }
 
+/// DROP TABLE statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropTableStmt {
+    pub table_name: String,
+}
+
+impl DropTableStmt {
+    pub fn new(table_name: impl Into<String>) -> Self {
+        Self {
+            table_name: table_name.into(),
+        }
+    }
+}
+
+/// DROP INDEX statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DropIndexStmt {
+    pub index_name: String,
+}
+
+impl DropIndexStmt {
+    pub fn new(index_name: impl Into<String>) -> Self {
+        Self {
+            index_name: index_name.into(),
+        }
+    }
+}
+
+/// DELETE statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DeleteStmt {
+    pub table_name: String,
+    pub where_clause: Option<Expr>,
+}
+
+impl DeleteStmt {
+    pub fn new(table_name: impl Into<String>, where_clause: Option<Expr>) -> Self {
+        Self {
+            table_name: table_name.into(),
+            where_clause,
+        }
+    }
+}
+
 /// SQL statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
     CreateTable(CreateTableStmt),
+    DropTable(DropTableStmt),
     Insert(InsertStmt),
     Select(SelectStmt),
     CreateIndex(CreateIndexStmt),
+    DropIndex(DropIndexStmt),
+    Delete(DeleteStmt),
 }

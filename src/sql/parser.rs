@@ -1,6 +1,7 @@
 use super::ast::{
-    BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, Expr, FromClause,
-    InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
+    BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
+    DropIndexStmt, DropTableStmt, Expr, FromClause, InsertStmt, Literal, SelectColumn,
+    SelectStmt, Statement,
 };
 
 /// Parse errors
@@ -30,6 +31,7 @@ impl std::error::Error for ParseError {}
 pub(crate) enum Token {
     // Keywords
     Create,
+    Drop,
     Table,
     Insert,
     Into,
@@ -46,6 +48,7 @@ pub(crate) enum Token {
     On,
     Join,
     And,
+    Delete,
     Dot,
 
     // Symbols
@@ -73,6 +76,7 @@ impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Token::Create => write!(f, "CREATE"),
+            Token::Drop => write!(f, "DROP"),
             Token::Table => write!(f, "TABLE"),
             Token::Insert => write!(f, "INSERT"),
             Token::Into => write!(f, "INTO"),
@@ -87,6 +91,7 @@ impl std::fmt::Display for Token {
             Token::On => write!(f, "ON"),
             Token::Join => write!(f, "JOIN"),
             Token::And => write!(f, "AND"),
+            Token::Delete => write!(f, "DELETE"),
             Token::Dot => write!(f, "."),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
@@ -277,6 +282,7 @@ impl Tokenizer {
                 let ident = self.read_identifier();
                 let token = match ident.to_uppercase().as_str() {
                     "CREATE" => Token::Create,
+                    "DROP" => Token::Drop,
                     "TABLE" => Token::Table,
                     "INSERT" => Token::Insert,
                     "INTO" => Token::Into,
@@ -291,6 +297,7 @@ impl Tokenizer {
                     "ON" => Token::On,
                     "JOIN" => Token::Join,
                     "AND" => Token::And,
+                    "DELETE" => Token::Delete,
                     "TRUE" => Token::True,
                     "FALSE" => Token::False,
                     _ => Token::Identifier(ident),
@@ -495,6 +502,77 @@ impl Parser {
         self.expect(Token::RightParen)?;
 
         Ok(CreateIndexStmt::new(index_name, table_name, columns))
+    }
+
+    fn parse_drop_table(&mut self) -> Result<DropTableStmt, ParseError> {
+        self.expect(Token::Drop)?;
+        self.expect(Token::Table)?;
+
+        let table_name = match self.current() {
+            Token::Identifier(s) => {
+                let name = s.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "table name".to_string(),
+                    found: format!("{}", self.current()),
+                });
+            }
+        };
+
+        Ok(DropTableStmt::new(table_name))
+    }
+
+    fn parse_drop_index(&mut self) -> Result<DropIndexStmt, ParseError> {
+        self.expect(Token::Drop)?;
+        self.expect(Token::Index)?;
+
+        let index_name = match self.current() {
+            Token::Identifier(s) => {
+                let name = s.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "index name".to_string(),
+                    found: format!("{}", self.current()),
+                });
+            }
+        };
+
+        Ok(DropIndexStmt::new(index_name))
+    }
+
+    fn parse_delete(&mut self) -> Result<DeleteStmt, ParseError> {
+        self.expect(Token::Delete)?;
+        self.expect(Token::From)?;
+
+        let table_name = match self.current() {
+            Token::Identifier(s) => {
+                let name = s.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "table name".to_string(),
+                    found: format!("{}", self.current()),
+                });
+            }
+        };
+
+        // Parse optional WHERE clause
+        let where_clause = if matches!(self.current(), Token::Where) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(DeleteStmt::new(table_name, where_clause))
     }
 
     fn parse_literal(&mut self) -> Result<Literal, ParseError> {
@@ -797,6 +875,28 @@ impl Parser {
                     }),
                 }
             }
+            Token::Drop => {
+                // Peek at next token to determine if it's TABLE or INDEX
+                self.advance();
+                match self.current() {
+                    Token::Table => {
+                        // Rewind to DROP
+                        self.position -= 1;
+                        let stmt = self.parse_drop_table()?;
+                        Ok(Statement::DropTable(stmt))
+                    }
+                    Token::Index => {
+                        // Rewind to DROP
+                        self.position -= 1;
+                        let stmt = self.parse_drop_index()?;
+                        Ok(Statement::DropIndex(stmt))
+                    }
+                    token => Err(ParseError::UnexpectedToken {
+                        expected: "TABLE or INDEX".to_string(),
+                        found: format!("{}", token),
+                    }),
+                }
+            }
             Token::Insert => {
                 let stmt = self.parse_insert()?;
                 Ok(Statement::Insert(stmt))
@@ -804,6 +904,10 @@ impl Parser {
             Token::Select => {
                 let stmt = self.parse_select()?;
                 Ok(Statement::Select(stmt))
+            }
+            Token::Delete => {
+                let stmt = self.parse_delete()?;
+                Ok(Statement::Delete(stmt))
             }
             Token::Eof => Err(ParseError::UnexpectedEof),
             token => Err(ParseError::UnexpectedToken {

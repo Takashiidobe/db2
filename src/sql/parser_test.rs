@@ -199,4 +199,34 @@ mod tests {
             _ => panic!("Expected Select statement"),
         }
     }
+
+    #[test]
+    fn test_parse_delete_without_where() {
+        let stmt = parse_sql("DELETE FROM users").unwrap();
+
+        match stmt {
+            Statement::Delete(delete) => {
+                assert_eq!(delete.table_name, "users");
+                assert!(delete.where_clause.is_none());
+            }
+            _ => panic!("Expected Delete statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_delete_with_where() {
+        let stmt = parse_sql("DELETE FROM users WHERE id = 5").unwrap();
+
+        match stmt {
+            Statement::Delete(delete) => {
+                assert_eq!(delete.table_name, "users");
+                let where_clause = delete.where_clause.expect("where clause");
+                match where_clause {
+                    Expr::BinaryOp { op, .. } => assert_eq!(op, BinaryOp::Eq),
+                    other => panic!("Unexpected where clause: {:?}", other),
+                }
+            }
+            _ => panic!("Expected Delete statement"),
+        }
+    }
 }
