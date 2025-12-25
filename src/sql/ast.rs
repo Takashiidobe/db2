@@ -3,6 +3,7 @@
 pub enum DataType {
     Integer,
     Unsigned,
+    Float,
     Boolean,
     Varchar,
 }
@@ -12,6 +13,7 @@ impl std::fmt::Display for DataType {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
             DataType::Unsigned => write!(f, "UNSIGNED"),
+            DataType::Float => write!(f, "FLOAT"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::Varchar => write!(f, "VARCHAR"),
         }
@@ -51,17 +53,33 @@ impl CreateTableStmt {
 }
 
 /// Literal value in SQL
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub enum Literal {
     Integer(i128),
+    Float(f64),
     Boolean(bool),
     String(String),
 }
+
+impl PartialEq for Literal {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Literal::Integer(a), Literal::Integer(b)) => a == b,
+            (Literal::Float(a), Literal::Float(b)) => a.to_bits() == b.to_bits(),
+            (Literal::Boolean(a), Literal::Boolean(b)) => a == b,
+            (Literal::String(a), Literal::String(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Literal {}
 
 impl std::fmt::Display for Literal {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Literal::Integer(i) => write!(f, "{}", i),
+            Literal::Float(fl) => write!(f, "{}", fl),
             Literal::Boolean(b) => write!(f, "{}", b),
             Literal::String(s) => write!(f, "'{}'", s),
         }

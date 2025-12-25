@@ -291,6 +291,23 @@ fn test_select_unsigned_index() {
     }
 }
 
+#[test]
+fn test_select_float_predicate() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE metrics (score FLOAT, name VARCHAR)");
+    db.execute_ok("INSERT INTO metrics VALUES (1.5, 'a'), (2.5, 'b'), (-1.0, 'c')");
+
+    let result = db.execute_ok("SELECT name FROM metrics WHERE score > 2.0");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::String("b".to_string()));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
 // JOIN tests
 
 #[test]

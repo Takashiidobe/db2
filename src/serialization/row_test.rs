@@ -147,6 +147,21 @@ mod tests {
     }
 
     #[test]
+    fn test_float_round_trip() {
+        let schema = Schema::new(vec![
+            Column::new("id", DataType::Integer),
+            Column::new("score", DataType::Float),
+        ]);
+
+        let row = vec![Value::Integer(1), Value::Float(98.6)];
+
+        let bytes = RowSerializer::serialize(&row, Some(&schema)).unwrap();
+        let deserialized = RowSerializer::deserialize(&bytes, &schema).unwrap();
+
+        assert_eq!(row, deserialized);
+    }
+
+    #[test]
     fn test_schema_validation_on_serialize() {
         let schema = create_test_schema();
 

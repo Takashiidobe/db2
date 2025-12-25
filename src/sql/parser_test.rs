@@ -49,6 +49,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_create_table_float() {
+        let sql = "CREATE TABLE metrics (value FLOAT, note VARCHAR)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::CreateTable(create) => {
+                assert_eq!(create.columns[0].data_type, DataType::Float);
+                assert_eq!(create.columns[1].data_type, DataType::Varchar);
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_case_insensitive() {
         let sql = "create table Users (ID integer, Name varchar)";
         let stmt = parse_sql(sql).unwrap();
@@ -108,6 +122,21 @@ mod tests {
                     insert.values[0][0],
                     Literal::Integer(18446744073709551615i128)
                 );
+            }
+            _ => panic!("Expected Insert statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_float_literal() {
+        let sql = "INSERT INTO test VALUES (1.5, -2.0, 3e2)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Insert(insert) => {
+                assert_eq!(insert.values[0][0], Literal::Float(1.5));
+                assert_eq!(insert.values[0][1], Literal::Float(-2.0));
+                assert_eq!(insert.values[0][2], Literal::Float(300.0));
             }
             _ => panic!("Expected Insert statement"),
         }

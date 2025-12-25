@@ -10,6 +10,7 @@ enum TypeTag {
     String = 1,
     Boolean = 2,
     Unsigned = 3,
+    Float = 4,
 }
 
 impl TypeTag {
@@ -19,6 +20,7 @@ impl TypeTag {
             1 => Ok(TypeTag::String),
             2 => Ok(TypeTag::Boolean),
             3 => Ok(TypeTag::Unsigned),
+            4 => Ok(TypeTag::Float),
             _ => Err(SerializationError::InvalidTypeTag(value)),
         }
     }
@@ -29,6 +31,7 @@ impl TypeTag {
             Value::Boolean(_) => TypeTag::Boolean,
             Value::String(_) => TypeTag::String,
             Value::Unsigned(_) => TypeTag::Unsigned,
+            Value::Float(_) => TypeTag::Float,
         }
     }
 }
@@ -71,6 +74,7 @@ impl std::error::Error for SerializationError {}
 ///
 /// For Integer:  [8 bytes: i64] (repeated value_count times)
 /// For Unsigned: [8 bytes: u64]
+/// For Float:    [8 bytes: f64]
 /// For Boolean:  [1 byte: 0 or 1]
 /// For String:   [4 bytes: length (u32)][length bytes: UTF-8 data] (repeated value_count times)
 /// ```
@@ -109,6 +113,7 @@ impl ColumnSerializer {
             match value {
                 Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
                 Value::Unsigned(u) => codec::write_u64(&mut buf, *u)?,
+                Value::Float(fv) => codec::write_f64(&mut buf, *fv)?,
                 Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
                 Value::String(s) => codec::write_string(&mut buf, s)?,
             }
@@ -143,6 +148,10 @@ impl ColumnSerializer {
                 TypeTag::Unsigned => {
                     let u = codec::read_u64(&mut cursor)?;
                     Value::Unsigned(u)
+                }
+                TypeTag::Float => {
+                    let f = codec::read_f64(&mut cursor)?;
+                    Value::Float(f)
                 }
                 TypeTag::String => {
                     let s = codec::read_string(&mut cursor)?;

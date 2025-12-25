@@ -201,6 +201,12 @@ impl IndexValue {
             (Literal::Integer(i), DbDataType::Unsigned) if *i >= 0 => {
                 (*i).try_into().ok().map(IndexValue::Unsigned)
             }
+            (Literal::Float(fv), DbDataType::Integer) if fv.fract() == 0.0 => {
+                (*fv as i128).try_into().ok().map(IndexValue::Signed)
+            }
+            (Literal::Float(fv), DbDataType::Unsigned) if fv.fract() == 0.0 && *fv >= 0.0 => {
+                (*fv as i128).try_into().ok().map(IndexValue::Unsigned)
+            }
             _ => None,
         }
     }
@@ -324,6 +330,7 @@ impl Executor {
                 let db_type = match col.data_type {
                     super::ast::DataType::Integer => DbDataType::Integer,
                     super::ast::DataType::Unsigned => DbDataType::Unsigned,
+                    super::ast::DataType::Float => DbDataType::Float,
                     super::ast::DataType::Boolean => DbDataType::Boolean,
                     super::ast::DataType::Varchar => DbDataType::String,
                 };
@@ -1294,6 +1301,7 @@ impl Executor {
                     ))
                 }
             }
+            Literal::Float(fv) => Ok(Value::Float(*fv)),
             Literal::Boolean(b) => Ok(Value::Boolean(*b)),
             Literal::String(s) => Ok(Value::String(s.clone())),
         }
@@ -1310,8 +1318,19 @@ impl Executor {
             (DbDataType::Integer, Value::Unsigned(u)) if u <= i64::MAX as u64 => {
                 Ok(Value::Integer(u as i64))
             }
+            (DbDataType::Integer, Value::Float(fv))
+                if fv.fract() == 0.0 && fv <= i64::MAX as f64 =>
+            {
+                Ok(Value::Integer(fv as i64))
+            }
             (DbDataType::Unsigned, Value::Unsigned(u)) => Ok(Value::Unsigned(u)),
             (DbDataType::Unsigned, Value::Integer(i)) if i >= 0 => Ok(Value::Unsigned(i as u64)),
+            (DbDataType::Unsigned, Value::Float(fv)) if fv.fract() == 0.0 && fv >= 0.0 => {
+                Ok(Value::Unsigned(fv as u64))
+            }
+            (DbDataType::Float, Value::Float(fv)) => Ok(Value::Float(fv)),
+            (DbDataType::Float, Value::Integer(i)) => Ok(Value::Float(i as f64)),
+            (DbDataType::Float, Value::Unsigned(u)) => Ok(Value::Float(u as f64)),
             (DbDataType::Boolean, Value::Boolean(b)) => Ok(Value::Boolean(b)),
             (DbDataType::String, Value::String(s)) => Ok(Value::String(s)),
             _ => Err(io::Error::new(

@@ -9,6 +9,9 @@ mod tests {
         assert!(DataType::Unsigned.matches(&Value::Unsigned(5)));
         assert!(DataType::Unsigned.matches(&Value::Integer(0)));
         assert!(!DataType::Unsigned.matches(&Value::Integer(-1)));
+        assert!(DataType::Float.matches(&Value::Float(1.5)));
+        assert!(DataType::Float.matches(&Value::Integer(1)));
+        assert!(DataType::Float.matches(&Value::Unsigned(1)));
         assert!(DataType::Boolean.matches(&Value::Boolean(true)));
         assert!(!DataType::Integer.matches(&Value::String("hello".to_string())));
         assert!(!DataType::Boolean.matches(&Value::Integer(0)));

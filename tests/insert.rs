@@ -135,6 +135,23 @@ fn test_insert_negative_into_unsigned_rejected() {
 }
 
 #[test]
+fn test_insert_float_values() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE metrics (score FLOAT)");
+    db.execute_ok("INSERT INTO metrics VALUES (1.5), (-2.0), (3e2)");
+
+    let result = db.execute_ok("SELECT * FROM metrics WHERE score < 0");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::Float(-2.0));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_insert_strings_with_quotes() {
     let mut db = TestDb::new().unwrap();
 

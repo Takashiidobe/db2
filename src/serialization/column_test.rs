@@ -23,6 +23,15 @@ mod tests {
     }
 
     #[test]
+    fn test_serialize_floats() {
+        let values = vec![Value::Float(1.5), Value::Float(-2.25)];
+        let bytes = ColumnSerializer::serialize(&values).unwrap();
+
+        // 4 bytes (count=2) + 1 byte (type) + 2 * 8 bytes
+        assert_eq!(bytes.len(), 4 + 1 + 2 * 8);
+    }
+
+    #[test]
     fn test_serialize_strings() {
         let values = vec![
             Value::String("hello".to_string()),
@@ -66,6 +75,20 @@ mod tests {
             Value::Unsigned(0),
             Value::Unsigned(42),
             Value::Unsigned(u64::MAX),
+        ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_round_trip_floats() {
+        let original = vec![
+            Value::Float(0.0),
+            Value::Float(-1.5),
+            Value::Float(1234.5678),
         ];
 
         let bytes = ColumnSerializer::serialize(&original).unwrap();

@@ -8,6 +8,7 @@ mod tests {
     fn test_data_type_display() {
         assert_eq!(format!("{}", DataType::Integer), "INTEGER");
         assert_eq!(format!("{}", DataType::Unsigned), "UNSIGNED");
+        assert_eq!(format!("{}", DataType::Float), "FLOAT");
         assert_eq!(format!("{}", DataType::Boolean), "BOOLEAN");
         assert_eq!(format!("{}", DataType::Varchar), "VARCHAR");
     }
@@ -35,6 +36,7 @@ mod tests {
     #[test]
     fn test_literal_display() {
         assert_eq!(format!("{}", Literal::Integer(42)), "42");
+        assert_eq!(format!("{}", Literal::Float(1.5)), "1.5");
         assert_eq!(format!("{}", Literal::Boolean(true)), "true");
         assert_eq!(
             format!("{}", Literal::String("hello".to_string())),

@@ -2,11 +2,12 @@ use std::cmp::Ordering;
 use std::fmt;
 
 /// Core data type for the database.
-/// Supports Integer (i64), Unsigned (u64), Boolean, and String (VARCHAR) types.
+/// Supports Integer (i64), Unsigned (u64), Float (f64), Boolean, and String (VARCHAR) types.
 #[derive(Debug, Clone)]
 pub enum Value {
     Integer(i64),
     Unsigned(u64),
+    Float(f64),
     Boolean(bool),
     String(String),
 }
@@ -15,6 +16,11 @@ impl Value {
     /// Returns true if this value is an Integer
     pub fn is_integer(&self) -> bool {
         matches!(self, Value::Integer(_))
+    }
+
+    /// Returns true if this value is a Float
+    pub fn is_float(&self) -> bool {
+        matches!(self, Value::Float(_))
     }
 
     /// Returns true if this value is an Unsigned Integer
@@ -48,6 +54,14 @@ impl Value {
         }
     }
 
+    /// Returns the Float value if this is a Float, None otherwise
+    pub fn as_float(&self) -> Option<f64> {
+        match self {
+            Value::Float(f) => Some(*f),
+            _ => None,
+        }
+    }
+
     /// Returns the Boolean value if this is a Boolean, None otherwise
     pub fn as_boolean(&self) -> Option<bool> {
         match self {
@@ -66,7 +80,7 @@ impl Value {
 
     fn kind(&self) -> ValueKind {
         match self {
-            Value::Integer(_) | Value::Unsigned(_) => ValueKind::Numeric,
+            Value::Integer(_) | Value::Unsigned(_) | Value::Float(_) => ValueKind::Numeric,
             Value::Boolean(_) => ValueKind::Boolean,
             Value::String(_) => ValueKind::String,
         }
@@ -78,6 +92,7 @@ impl fmt::Display for Value {
         match self {
             Value::Integer(i) => write!(f, "{}", i),
             Value::Unsigned(u) => write!(f, "{}", u),
+            Value::Float(fl) => write!(f, "{}", fl),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{}", s),
         }
@@ -91,6 +106,13 @@ impl PartialEq for Value {
             (Value::Unsigned(a), Value::Unsigned(b)) => a == b,
             (Value::Integer(a), Value::Unsigned(b)) | (Value::Unsigned(b), Value::Integer(a)) => {
                 *a >= 0 && (*a as u64) == *b
+            }
+            (Value::Float(a), Value::Float(b)) => a.to_bits() == b.to_bits(),
+            (Value::Float(a), Value::Integer(b)) | (Value::Integer(b), Value::Float(a)) => {
+                (*a as f64) == *b as f64
+            }
+            (Value::Float(a), Value::Unsigned(b)) | (Value::Unsigned(b), Value::Float(a)) => {
+                (*a as f64) == *b as f64
             }
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
@@ -126,6 +148,11 @@ impl Ord for Value {
                     a.cmp(&(*b as u64))
                 }
             }
+            (Value::Float(a), Value::Float(b)) => a.total_cmp(b),
+            (Value::Float(a), Value::Integer(b)) => a.total_cmp(&(*b as f64)),
+            (Value::Float(a), Value::Unsigned(b)) => a.total_cmp(&(*b as f64)),
+            (Value::Integer(a), Value::Float(b)) => (*a as f64).total_cmp(b),
+            (Value::Unsigned(a), Value::Float(b)) => (*a as f64).total_cmp(b),
             (Value::Boolean(a), Value::Boolean(b)) => a.cmp(b),
             (Value::String(a), Value::String(b)) => a.cmp(b),
             _ => match (self.kind(), other.kind()) {

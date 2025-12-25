@@ -27,7 +27,7 @@ impl std::fmt::Display for ParseError {
 impl std::error::Error for ParseError {}
 
 /// Token types
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub(crate) enum Token {
     // Keywords
     Create,
@@ -39,6 +39,7 @@ pub(crate) enum Token {
     Integer,
     Varchar,
     Boolean,
+    Float,
     Unsigned,
     True,
     False,
@@ -69,11 +70,61 @@ pub(crate) enum Token {
     // Literals
     Identifier(String),
     IntegerLiteral(i128),
+    FloatLiteral(f64),
     StringLiteral(String),
 
     // End of input
     Eof,
 }
+
+impl PartialEq for Token {
+    fn eq(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Token::Create, Token::Create)
+            | (Token::Drop, Token::Drop)
+            | (Token::Table, Token::Table)
+            | (Token::Insert, Token::Insert)
+            | (Token::Into, Token::Into)
+            | (Token::Values, Token::Values)
+            | (Token::Integer, Token::Integer)
+            | (Token::Unsigned, Token::Unsigned)
+            | (Token::Float, Token::Float)
+            | (Token::Varchar, Token::Varchar)
+            | (Token::Boolean, Token::Boolean)
+            | (Token::True, Token::True)
+            | (Token::False, Token::False)
+            | (Token::Select, Token::Select)
+            | (Token::From, Token::From)
+            | (Token::Where, Token::Where)
+            | (Token::Index, Token::Index)
+            | (Token::On, Token::On)
+            | (Token::Join, Token::Join)
+            | (Token::And, Token::And)
+            | (Token::Delete, Token::Delete)
+            | (Token::Dot, Token::Dot)
+            | (Token::Update, Token::Update)
+            | (Token::Set, Token::Set)
+            | (Token::LeftParen, Token::LeftParen)
+            | (Token::RightParen, Token::RightParen)
+            | (Token::Comma, Token::Comma)
+            | (Token::Asterisk, Token::Asterisk)
+            | (Token::Equals, Token::Equals)
+            | (Token::NotEquals, Token::NotEquals)
+            | (Token::LessThan, Token::LessThan)
+            | (Token::LessThanEquals, Token::LessThanEquals)
+            | (Token::GreaterThan, Token::GreaterThan)
+            | (Token::GreaterThanEquals, Token::GreaterThanEquals)
+            | (Token::Eof, Token::Eof) => true,
+            (Token::Identifier(a), Token::Identifier(b)) => a == b,
+            (Token::IntegerLiteral(a), Token::IntegerLiteral(b)) => a == b,
+            (Token::FloatLiteral(a), Token::FloatLiteral(b)) => a.to_bits() == b.to_bits(),
+            (Token::StringLiteral(a), Token::StringLiteral(b)) => a == b,
+            _ => false,
+        }
+    }
+}
+
+impl Eq for Token {}
 
 impl std::fmt::Display for Token {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -88,6 +139,7 @@ impl std::fmt::Display for Token {
             Token::Varchar => write!(f, "VARCHAR"),
             Token::Boolean => write!(f, "BOOLEAN"),
             Token::Unsigned => write!(f, "UNSIGNED"),
+            Token::Float => write!(f, "FLOAT"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -113,6 +165,7 @@ impl std::fmt::Display for Token {
             Token::GreaterThanEquals => write!(f, ">="),
             Token::Identifier(s) => write!(f, "identifier '{}'", s),
             Token::IntegerLiteral(i) => write!(f, "integer {}", i),
+            Token::FloatLiteral(fv) => write!(f, "float {}", fv),
             Token::StringLiteral(s) => write!(f, "string '{}'", s),
             Token::Eof => write!(f, "end of input"),
         }
@@ -123,6 +176,11 @@ impl std::fmt::Display for Token {
 pub(crate) struct Tokenizer {
     input: Vec<char>,
     position: usize,
+}
+
+enum NumberToken {
+    Integer(i128),
+    Float(f64),
 }
 
 impl Tokenizer {
@@ -164,7 +222,7 @@ impl Tokenizer {
         result
     }
 
-    fn read_number(&mut self) -> Result<i128, ParseError> {
+    fn read_number(&mut self) -> Result<NumberToken, ParseError> {
         let mut result = String::new();
         let mut is_negative = false;
 
@@ -182,15 +240,72 @@ impl Tokenizer {
             }
         }
 
+        let mut is_float = false;
+
+        if self.current() == Some('.') {
+            if self
+                .input
+                .get(self.position + 1)
+                .is_some_and(|c| c.is_ascii_digit())
+            {
+                is_float = true;
+                result.push('.');
+                self.advance();
+                while let Some(ch) = self.current() {
+                    if ch.is_ascii_digit() {
+                        result.push(ch);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+            }
+        }
+
+        if let Some(ch) = self.current() {
+            if ch == 'e' || ch == 'E' {
+                is_float = true;
+                result.push(ch);
+                self.advance();
+                if let Some(sign) = self.current() {
+                    if sign == '+' || sign == '-' {
+                        result.push(sign);
+                        self.advance();
+                    }
+                }
+                let mut has_exponent_digit = false;
+                while let Some(d) = self.current() {
+                    if d.is_ascii_digit() {
+                        has_exponent_digit = true;
+                        result.push(d);
+                        self.advance();
+                    } else {
+                        break;
+                    }
+                }
+                if !has_exponent_digit {
+                    return Err(ParseError::InvalidSyntax(
+                        "Invalid number: missing exponent digits".to_string(),
+                    ));
+                }
+            }
+        }
+
         if result.is_empty() {
             return Err(ParseError::InvalidSyntax("Invalid number".to_string()));
         }
 
-        let num: i128 = result
-            .parse()
-            .map_err(|_| ParseError::InvalidSyntax("Invalid number".to_string()))?;
-
-        Ok(if is_negative { -num } else { num })
+        if is_float {
+            let num: f64 = result
+                .parse()
+                .map_err(|_| ParseError::InvalidSyntax("Invalid number".to_string()))?;
+            Ok(NumberToken::Float(if is_negative { -num } else { num }))
+        } else {
+            let num: i128 = result
+                .parse()
+                .map_err(|_| ParseError::InvalidSyntax("Invalid number".to_string()))?;
+            Ok(NumberToken::Integer(if is_negative { -num } else { num }))
+        }
     }
 
     fn read_string(&mut self) -> Result<String, ParseError> {
@@ -282,7 +397,10 @@ impl Tokenizer {
             }
             Some(ch) if ch.is_ascii_digit() || ch == '-' => {
                 let num = self.read_number()?;
-                Ok(Token::IntegerLiteral(num))
+                match num {
+                    NumberToken::Integer(i) => Ok(Token::IntegerLiteral(i)),
+                    NumberToken::Float(f) => Ok(Token::FloatLiteral(f)),
+                }
             }
             Some(ch) if ch.is_alphabetic() || ch == '_' => {
                 let ident = self.read_identifier();
@@ -295,6 +413,7 @@ impl Tokenizer {
                     "VALUES" => Token::Values,
                     "INTEGER" => Token::Integer,
                     "UNSIGNED" => Token::Unsigned,
+                    "FLOAT" => Token::Float,
                     "VARCHAR" => Token::Varchar,
                     "BOOLEAN" | "BOOL" => Token::Boolean,
                     "SELECT" => Token::Select,
@@ -382,6 +501,10 @@ impl Parser {
                 self.advance();
                 Ok(DataType::Unsigned)
             }
+            Token::Float => {
+                self.advance();
+                Ok(DataType::Float)
+            }
             Token::Varchar => {
                 self.advance();
                 Ok(DataType::Varchar)
@@ -391,7 +514,7 @@ impl Parser {
                 Ok(DataType::Boolean)
             }
             _ => Err(ParseError::UnexpectedToken {
-                expected: "data type (INTEGER, UNSIGNED, BOOLEAN, or VARCHAR)".to_string(),
+                expected: "data type (INTEGER, UNSIGNED, FLOAT, BOOLEAN, or VARCHAR)".to_string(),
                 found: format!("{}", token),
             }),
         }
@@ -657,6 +780,10 @@ impl Parser {
                 self.advance();
                 Ok(Literal::Integer(i))
             }
+            Token::FloatLiteral(fv) => {
+                self.advance();
+                Ok(Literal::Float(fv))
+            }
             Token::StringLiteral(s) => {
                 self.advance();
                 Ok(Literal::String(s))
@@ -753,6 +880,10 @@ impl Parser {
             Token::IntegerLiteral(i) => {
                 self.advance();
                 Ok(Expr::Literal(Literal::Integer(i)))
+            }
+            Token::FloatLiteral(fv) => {
+                self.advance();
+                Ok(Expr::Literal(Literal::Float(fv)))
             }
             Token::StringLiteral(s) => {
                 self.advance();

@@ -5,6 +5,7 @@ use super::Value;
 pub enum DataType {
     Integer,
     Unsigned,
+    Float,
     Boolean,
     String,
 }
@@ -17,6 +18,9 @@ impl DataType {
             (DataType::Integer, Value::Unsigned(u)) => *u <= i64::MAX as u64,
             (DataType::Unsigned, Value::Unsigned(_)) => true,
             (DataType::Unsigned, Value::Integer(i)) => *i >= 0,
+            (DataType::Float, Value::Float(_)) => true,
+            (DataType::Float, Value::Integer(_)) => true,
+            (DataType::Float, Value::Unsigned(_)) => true,
             (DataType::Boolean, Value::Boolean(_)) => true,
             (DataType::String, Value::String(_)) => true,
             _ => false,
@@ -29,6 +33,7 @@ impl std::fmt::Display for DataType {
         match self {
             DataType::Integer => write!(f, "INTEGER"),
             DataType::Unsigned => write!(f, "UNSIGNED"),
+            DataType::Float => write!(f, "FLOAT"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::String => write!(f, "VARCHAR"),
         }

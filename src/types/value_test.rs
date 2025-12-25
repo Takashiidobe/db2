@@ -7,6 +7,7 @@ mod tests {
         let val = Value::Integer(42);
         assert!(val.is_integer());
         assert!(!val.is_unsigned());
+        assert!(!val.is_float());
         assert!(!val.is_boolean());
         assert!(!val.is_string());
         assert_eq!(val.as_integer(), Some(42));
@@ -19,8 +20,18 @@ mod tests {
         let val = Value::Unsigned(42);
         assert!(val.is_unsigned());
         assert!(!val.is_integer());
+        assert!(!val.is_float());
         assert_eq!(val.as_unsigned(), Some(42));
         assert_eq!(val.as_integer(), None);
+    }
+
+    #[test]
+    fn test_float_creation() {
+        let val = Value::Float(3.14);
+        assert!(val.is_float());
+        assert!(!val.is_integer());
+        assert!(!val.is_unsigned());
+        assert_eq!(val.as_float(), Some(3.14));
     }
 
     #[test]
@@ -46,6 +57,7 @@ mod tests {
     fn test_display() {
         assert_eq!(format!("{}", Value::Integer(42)), "42");
         assert_eq!(format!("{}", Value::Unsigned(42)), "42");
+        assert_eq!(format!("{}", Value::Float(1.5)), "1.5");
         assert_eq!(format!("{}", Value::Boolean(false)), "false");
         assert_eq!(format!("{}", Value::String("hello".to_string())), "hello");
     }
@@ -56,6 +68,9 @@ mod tests {
         assert_ne!(Value::Integer(42), Value::Integer(43));
         assert_eq!(Value::Integer(5), Value::Unsigned(5));
         assert_ne!(Value::Integer(-1), Value::Unsigned(1));
+        assert_eq!(Value::Float(5.0), Value::Integer(5));
+        assert_eq!(Value::Float(5.0), Value::Unsigned(5));
+        assert_ne!(Value::Float(5.1), Value::Integer(5));
         assert_eq!(
             Value::String("hello".to_string()),
             Value::String("hello".to_string())
@@ -75,6 +90,7 @@ mod tests {
         let b = Value::Integer(20);
         let c = Value::Integer(10);
         let u = Value::Unsigned(15);
+        let f = Value::Float(10.5);
 
         assert!(a < b);
         assert!(b > a);
@@ -82,6 +98,7 @@ mod tests {
         assert!(a >= c);
         assert!(u > a);
         assert!(Value::Unsigned(0) > Value::Integer(-1));
+        assert!(f > a);
     }
 
     #[test]
@@ -130,6 +147,9 @@ mod tests {
 
         let val = Value::Unsigned(7);
         assert_eq!(format!("{:?}", val), "Unsigned(7)");
+
+        let val = Value::Float(1.5);
+        assert_eq!(format!("{:?}", val), "Float(1.5)");
 
         let val = Value::String("test".to_string());
         assert_eq!(format!("{:?}", val), "String(\"test\")");
