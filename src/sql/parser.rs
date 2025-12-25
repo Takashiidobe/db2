@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
     DropIndexStmt, DropTableStmt, Expr, FromClause, IndexType, InsertStmt, Literal, SelectColumn,
-    SelectStmt, Statement, UpdateStmt,
+    SelectStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 
 /// Parse errors
@@ -33,6 +33,10 @@ pub(crate) enum Token {
     Create,
     Drop,
     Table,
+    Begin,
+    Commit,
+    Rollback,
+    Transaction,
     Insert,
     Into,
     Values,
@@ -84,6 +88,10 @@ impl PartialEq for Token {
             (Token::Create, Token::Create)
             | (Token::Drop, Token::Drop)
             | (Token::Table, Token::Table)
+            | (Token::Begin, Token::Begin)
+            | (Token::Commit, Token::Commit)
+            | (Token::Rollback, Token::Rollback)
+            | (Token::Transaction, Token::Transaction)
             | (Token::Insert, Token::Insert)
             | (Token::Into, Token::Into)
             | (Token::Values, Token::Values)
@@ -134,6 +142,10 @@ impl std::fmt::Display for Token {
             Token::Create => write!(f, "CREATE"),
             Token::Drop => write!(f, "DROP"),
             Token::Table => write!(f, "TABLE"),
+            Token::Begin => write!(f, "BEGIN"),
+            Token::Commit => write!(f, "COMMIT"),
+            Token::Rollback => write!(f, "ROLLBACK"),
+            Token::Transaction => write!(f, "TRANSACTION"),
             Token::Insert => write!(f, "INSERT"),
             Token::Into => write!(f, "INTO"),
             Token::Values => write!(f, "VALUES"),
@@ -411,6 +423,10 @@ impl Tokenizer {
                     "CREATE" => Token::Create,
                     "DROP" => Token::Drop,
                     "TABLE" => Token::Table,
+                    "BEGIN" => Token::Begin,
+                    "COMMIT" => Token::Commit,
+                    "ROLLBACK" => Token::Rollback,
+                    "TRANSACTION" => Token::Transaction,
                     "INSERT" => Token::Insert,
                     "INTO" => Token::Into,
                     "VALUES" => Token::Values,
@@ -702,6 +718,23 @@ impl Parser {
         };
 
         Ok(DropIndexStmt::new(index_name))
+    }
+
+    fn parse_transaction_stmt(
+        &mut self,
+        command: TransactionCommand,
+    ) -> Result<TransactionStmt, ParseError> {
+        match command {
+            TransactionCommand::Begin => self.expect(Token::Begin)?,
+            TransactionCommand::Commit => self.expect(Token::Commit)?,
+            TransactionCommand::Rollback => self.expect(Token::Rollback)?,
+        }
+
+        if matches!(self.current(), Token::Transaction) {
+            self.advance();
+        }
+
+        Ok(TransactionStmt::new(command))
     }
 
     fn parse_delete(&mut self) -> Result<DeleteStmt, ParseError> {
@@ -1124,6 +1157,18 @@ impl Parser {
                         found: format!("{}", token),
                     }),
                 }
+            }
+            Token::Begin => {
+                let stmt = self.parse_transaction_stmt(TransactionCommand::Begin)?;
+                Ok(Statement::Transaction(stmt))
+            }
+            Token::Commit => {
+                let stmt = self.parse_transaction_stmt(TransactionCommand::Commit)?;
+                Ok(Statement::Transaction(stmt))
+            }
+            Token::Rollback => {
+                let stmt = self.parse_transaction_stmt(TransactionCommand::Rollback)?;
+                Ok(Statement::Transaction(stmt))
             }
             Token::Insert => {
                 let stmt = self.parse_insert()?;

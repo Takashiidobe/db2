@@ -2,7 +2,7 @@ mod tests {
     use crate::sql::ast::{BinaryOp, Expr, FromClause, IndexType, Literal, SelectColumn};
     use crate::sql::parse_sql;
     use crate::sql::parser::{Token, Tokenizer};
-    use crate::sql::{DataType, Statement};
+    use crate::sql::{DataType, Statement, TransactionCommand};
 
     #[test]
     fn test_tokenize_create_table() {
@@ -313,6 +313,39 @@ mod tests {
                 assert_eq!(create.columns, vec!["id"]);
             }
             _ => panic!("Expected CreateIndex statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_begin_transaction() {
+        let stmt = parse_sql("BEGIN TRANSACTION").unwrap();
+        match stmt {
+            Statement::Transaction(txn) => {
+                assert_eq!(txn.command, TransactionCommand::Begin);
+            }
+            _ => panic!("Expected Transaction statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_commit() {
+        let stmt = parse_sql("COMMIT").unwrap();
+        match stmt {
+            Statement::Transaction(txn) => {
+                assert_eq!(txn.command, TransactionCommand::Commit);
+            }
+            _ => panic!("Expected Transaction statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_rollback() {
+        let stmt = parse_sql("ROLLBACK").unwrap();
+        match stmt {
+            Statement::Transaction(txn) => {
+                assert_eq!(txn.command, TransactionCommand::Rollback);
+            }
+            _ => panic!("Expected Transaction statement"),
         }
     }
 }

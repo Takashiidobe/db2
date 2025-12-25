@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
     DropTableStmt, Expr, IndexType, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
-    UpdateStmt,
+    TransactionCommand, TransactionStmt, UpdateStmt,
 };
 use crate::index::{BPlusTree, HashIndex};
 use crate::optimizer::planner::{
@@ -42,6 +42,8 @@ pub enum ExecutionResult {
     Delete { rows_deleted: usize },
     /// Rows updated successfully
     Update { rows_updated: usize },
+    /// Transaction control statement
+    Transaction { command: TransactionCommand },
 }
 
 impl std::fmt::Display for ExecutionResult {
@@ -124,6 +126,11 @@ impl std::fmt::Display for ExecutionResult {
                     write!(f, "{} rows updated", rows_updated)
                 }
             }
+            ExecutionResult::Transaction { command } => match command {
+                TransactionCommand::Begin => write!(f, "Transaction started"),
+                TransactionCommand::Commit => write!(f, "Transaction committed"),
+                TransactionCommand::Rollback => write!(f, "Transaction rolled back"),
+            },
         }
     }
 }
@@ -347,6 +354,7 @@ impl Executor {
             Statement::DropIndex(drop_index) => self.execute_drop_index(drop_index),
             Statement::Delete(delete) => self.execute_delete(delete),
             Statement::Update(update) => self.execute_update(update),
+            Statement::Transaction(txn) => self.execute_transaction(txn),
         }
     }
 
@@ -636,6 +644,12 @@ impl Executor {
         }
 
         Ok(ExecutionResult::Update { rows_updated })
+    }
+
+    fn execute_transaction(&mut self, stmt: TransactionStmt) -> io::Result<ExecutionResult> {
+        Ok(ExecutionResult::Transaction {
+            command: stmt.command,
+        })
     }
 
     /// Execute INSERT statement

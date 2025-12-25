@@ -1,6 +1,6 @@
 mod tests {
     use crate::{
-        sql::{ExecutionResult, Executor, IndexType, parser::parse_sql},
+        sql::{ExecutionResult, Executor, IndexType, TransactionCommand, parser::parse_sql},
         table::RowId,
         types::Value,
     };
@@ -947,6 +947,30 @@ mod tests {
                 ));
             }
             _ => panic!("Expected Select result"),
+        }
+    }
+
+    #[test]
+    fn test_execute_transaction_statements() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        let stmt = parse_sql("BEGIN").unwrap();
+        let result = executor.execute(stmt).unwrap();
+        match result {
+            ExecutionResult::Transaction { command } => {
+                assert_eq!(command, TransactionCommand::Begin);
+            }
+            _ => panic!("Expected Transaction result"),
+        }
+
+        let stmt = parse_sql("COMMIT").unwrap();
+        let result = executor.execute(stmt).unwrap();
+        match result {
+            ExecutionResult::Transaction { command } => {
+                assert_eq!(command, TransactionCommand::Commit);
+            }
+            _ => panic!("Expected Transaction result"),
         }
     }
 }

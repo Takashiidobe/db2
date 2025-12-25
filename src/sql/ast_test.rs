@@ -1,6 +1,6 @@
 mod tests {
     use crate::sql::{
-        CreateTableStmt, DataType, InsertStmt, Statement,
+        CreateTableStmt, DataType, InsertStmt, Statement, TransactionCommand, TransactionStmt,
         ast::{ColumnDef, Literal},
     };
 
@@ -67,5 +67,8 @@ mod tests {
 
         let insert = Statement::Insert(InsertStmt::new("test", vec![vec![Literal::Integer(1)]]));
         assert!(matches!(insert, Statement::Insert(_)));
+
+        let txn = Statement::Transaction(TransactionStmt::new(TransactionCommand::Begin));
+        assert!(matches!(txn, Statement::Transaction(_)));
     }
 }

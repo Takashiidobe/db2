@@ -331,6 +331,26 @@ impl UpdateStmt {
     }
 }
 
+/// Transaction control commands.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TransactionCommand {
+    Begin,
+    Commit,
+    Rollback,
+}
+
+/// Transaction statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TransactionStmt {
+    pub command: TransactionCommand,
+}
+
+impl TransactionStmt {
+    pub fn new(command: TransactionCommand) -> Self {
+        Self { command }
+    }
+}
+
 /// SQL statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -342,4 +362,5 @@ pub enum Statement {
     DropIndex(DropIndexStmt),
     Delete(DeleteStmt),
     Update(UpdateStmt),
+    Transaction(TransactionStmt),
 }

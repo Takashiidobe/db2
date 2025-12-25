@@ -13,7 +13,7 @@ mod parser_test;
 
 pub use ast::{
     CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, IndexType, InsertStmt,
-    Statement, UpdateStmt,
+    Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 pub use executor::{ExecutionResult, Executor};
 pub use parser::{ParseError, parse_sql};
