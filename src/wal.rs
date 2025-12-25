@@ -1,7 +1,8 @@
 use crate::serialization::codec;
 use crate::table::RowId;
 use crate::types::Value;
-use std::io::{self, Cursor};
+use std::io::{self, Cursor, Read, Write};
+use std::path::{Path, PathBuf};
 
 pub type TxnId = u64;
 
@@ -224,6 +225,59 @@ impl WalRecord {
 
         Ok(record)
     }
+}
+
+pub struct WalFile {
+    path: PathBuf,
+}
+
+impl WalFile {
+    pub fn new(path: impl AsRef<Path>) -> Self {
+        Self {
+            path: path.as_ref().to_path_buf(),
+        }
+    }
+
+    pub fn append(&self, record: &WalRecord) -> io::Result<()> {
+        let data = record.serialize()?;
+        let mut file = std::fs::OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.path)?;
+        codec::write_u32(&mut file, data.len() as u32)?;
+        file.write_all(&data)?;
+        file.flush()
+    }
+
+    pub fn read_all(&self) -> io::Result<Vec<WalRecord>> {
+        if !self.path.exists() {
+            return Ok(Vec::new());
+        }
+
+        let mut file = std::fs::File::open(&self.path)?;
+        let mut records = Vec::new();
+
+        loop {
+            let mut len_buf = [0u8; 4];
+            match file.read_exact(&mut len_buf) {
+                Ok(()) => {}
+                Err(err) if err.kind() == io::ErrorKind::UnexpectedEof => break,
+                Err(err) => return Err(err),
+            }
+
+            let len = u32::from_le_bytes(len_buf) as usize;
+            let mut data = vec![0u8; len];
+            file.read_exact(&mut data)?;
+            let record = WalRecord::deserialize(&data).map_err(to_io_error)?;
+            records.push(record);
+        }
+
+        Ok(records)
+    }
+}
+
+fn to_io_error(err: WalError) -> io::Error {
+    io::Error::new(io::ErrorKind::InvalidData, err)
 }
 
 fn write_table(buf: &mut Vec<u8>, table: &str) -> io::Result<()> {
