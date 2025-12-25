@@ -45,6 +45,10 @@ pub(crate) enum Token {
     Boolean,
     Float,
     Unsigned,
+    Date,
+    Timestamp,
+    Decimal,
+    Numeric,
     True,
     False,
     Select,
@@ -108,6 +112,10 @@ impl PartialEq for Token {
             | (Token::Float, Token::Float)
             | (Token::Varchar, Token::Varchar)
             | (Token::Boolean, Token::Boolean)
+            | (Token::Date, Token::Date)
+            | (Token::Timestamp, Token::Timestamp)
+            | (Token::Decimal, Token::Decimal)
+            | (Token::Numeric, Token::Numeric)
             | (Token::True, Token::True)
             | (Token::False, Token::False)
             | (Token::Select, Token::Select)
@@ -170,6 +178,10 @@ impl std::fmt::Display for Token {
             Token::Boolean => write!(f, "BOOLEAN"),
             Token::Unsigned => write!(f, "UNSIGNED"),
             Token::Float => write!(f, "FLOAT"),
+            Token::Date => write!(f, "DATE"),
+            Token::Timestamp => write!(f, "TIMESTAMP"),
+            Token::Decimal => write!(f, "DECIMAL"),
+            Token::Numeric => write!(f, "NUMERIC"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -463,6 +475,10 @@ impl Tokenizer {
                     "FLOAT" => Token::Float,
                     "VARCHAR" => Token::Varchar,
                     "BOOLEAN" | "BOOL" => Token::Boolean,
+                    "DATE" => Token::Date,
+                    "TIMESTAMP" => Token::Timestamp,
+                    "DECIMAL" => Token::Decimal,
+                    "NUMERIC" => Token::Numeric,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
@@ -568,8 +584,20 @@ impl Parser {
                 self.advance();
                 Ok(DataType::Boolean)
             }
+            Token::Date => {
+                self.advance();
+                Ok(DataType::Date)
+            }
+            Token::Timestamp => {
+                self.advance();
+                Ok(DataType::Timestamp)
+            }
+            Token::Decimal | Token::Numeric => {
+                self.advance();
+                Ok(DataType::Decimal)
+            }
             _ => Err(ParseError::UnexpectedToken {
-                expected: "data type (INTEGER, UNSIGNED, FLOAT, BOOLEAN, or VARCHAR)".to_string(),
+                expected: "data type (INTEGER, UNSIGNED, FLOAT, BOOLEAN, VARCHAR, DATE, TIMESTAMP, or DECIMAL)".to_string(),
                 found: format!("{}", token),
             }),
         }
@@ -952,6 +980,57 @@ impl Parser {
                 self.advance();
                 Ok(Literal::Null)
             }
+            Token::Date => {
+                self.advance();
+                let literal = match self.current() {
+                    Token::StringLiteral(s) => {
+                        let value = s.clone();
+                        self.advance();
+                        value
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "date string literal".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                Ok(Literal::Date(literal))
+            }
+            Token::Timestamp => {
+                self.advance();
+                let literal = match self.current() {
+                    Token::StringLiteral(s) => {
+                        let value = s.clone();
+                        self.advance();
+                        value
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "timestamp string literal".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                Ok(Literal::Timestamp(literal))
+            }
+            Token::Decimal | Token::Numeric => {
+                self.advance();
+                let literal = match self.current() {
+                    Token::StringLiteral(s) => {
+                        let value = s.clone();
+                        self.advance();
+                        value
+                    }
+                    _ => {
+                        return Err(ParseError::UnexpectedToken {
+                            expected: "decimal string literal".to_string(),
+                            found: format!("{}", self.current()),
+                        });
+                    }
+                };
+                Ok(Literal::Decimal(literal))
+            }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "literal value".to_string(),
                 found: format!("{}", token),
@@ -1052,6 +1131,10 @@ impl Parser {
             Token::False => {
                 self.advance();
                 Ok(Expr::Literal(Literal::Boolean(false)))
+            }
+            Token::Null | Token::Date | Token::Timestamp | Token::Decimal | Token::Numeric => {
+                let literal = self.parse_literal()?;
+                Ok(Expr::Literal(literal))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "column name or literal".to_string(),

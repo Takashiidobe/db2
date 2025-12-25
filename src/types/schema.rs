@@ -8,6 +8,9 @@ pub enum DataType {
     Float,
     Boolean,
     String,
+    Date,
+    Timestamp,
+    Decimal,
 }
 
 impl DataType {
@@ -24,6 +27,9 @@ impl DataType {
             (DataType::Float, Value::Unsigned(_)) => true,
             (DataType::Boolean, Value::Boolean(_)) => true,
             (DataType::String, Value::String(_)) => true,
+            (DataType::Date, Value::Date(_)) => true,
+            (DataType::Timestamp, Value::Timestamp(_)) => true,
+            (DataType::Decimal, Value::Decimal(_)) => true,
             _ => false,
         }
     }
@@ -37,6 +43,9 @@ impl std::fmt::Display for DataType {
             DataType::Float => write!(f, "FLOAT"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::String => write!(f, "VARCHAR"),
+            DataType::Date => write!(f, "DATE"),
+            DataType::Timestamp => write!(f, "TIMESTAMP"),
+            DataType::Decimal => write!(f, "DECIMAL"),
         }
     }
 }

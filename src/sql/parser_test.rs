@@ -63,6 +63,21 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_create_table_date_timestamp_decimal() {
+        let sql = "CREATE TABLE events (d DATE, ts TIMESTAMP, amount DECIMAL)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::CreateTable(create) => {
+                assert_eq!(create.columns[0].data_type, DataType::Date);
+                assert_eq!(create.columns[1].data_type, DataType::Timestamp);
+                assert_eq!(create.columns[2].data_type, DataType::Decimal);
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_case_insensitive() {
         let sql = "create table Users (ID integer, Name varchar)";
         let stmt = parse_sql(sql).unwrap();
@@ -193,6 +208,27 @@ mod tests {
                         assert_eq!(op, BinaryOp::Eq);
                         assert!(matches!(*left, Expr::Column(_)));
                         assert!(matches!(*right, Expr::Literal(Literal::Boolean(false))));
+                    }
+                    _ => panic!("Expected binary op"),
+                }
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_typed_literals_in_where() {
+        let sql = "SELECT * FROM events WHERE d = DATE '2025-01-02' AND amount > DECIMAL '12.34'";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                let where_expr = select.where_clause.expect("where clause");
+                match where_expr {
+                    Expr::BinaryOp { left, op, right } => {
+                        assert_eq!(op, BinaryOp::And);
+                        assert!(matches!(*left, Expr::BinaryOp { .. }));
+                        assert!(matches!(*right, Expr::BinaryOp { .. }));
                     }
                     _ => panic!("Expected binary op"),
                 }

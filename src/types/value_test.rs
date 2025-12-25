@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::types::Value;
+    use crate::types::{Date, Decimal, Timestamp, Value};
 
     #[test]
     fn test_integer_creation() {
@@ -54,12 +54,57 @@ mod tests {
     }
 
     #[test]
+    fn test_date_creation() {
+        let date = Date::parse("2025-01-02").expect("valid date");
+        let val = Value::Date(date);
+        assert!(val.is_date());
+        assert!(!val.is_timestamp());
+        assert!(!val.is_decimal());
+        assert_eq!(val.as_date(), Some(date));
+    }
+
+    #[test]
+    fn test_timestamp_creation() {
+        let ts = Timestamp::parse("2025-01-02 03:04:05").expect("valid timestamp");
+        let val = Value::Timestamp(ts);
+        assert!(val.is_timestamp());
+        assert!(!val.is_date());
+        assert_eq!(val.as_timestamp(), Some(ts));
+    }
+
+    #[test]
+    fn test_decimal_creation() {
+        let dec = Decimal::parse("12.34").expect("valid decimal");
+        let val = Value::Decimal(dec);
+        assert!(val.is_decimal());
+        assert_eq!(val.as_decimal(), Some(dec));
+    }
+
+    #[test]
     fn test_display() {
         assert_eq!(format!("{}", Value::Integer(42)), "42");
         assert_eq!(format!("{}", Value::Unsigned(42)), "42");
         assert_eq!(format!("{}", Value::Float(1.5)), "1.5");
         assert_eq!(format!("{}", Value::Boolean(false)), "false");
         assert_eq!(format!("{}", Value::String("hello".to_string())), "hello");
+        assert_eq!(
+            format!(
+                "{}",
+                Value::Date(Date::parse("2025-01-02").expect("valid date"))
+            ),
+            "2025-01-02"
+        );
+        assert_eq!(
+            format!(
+                "{}",
+                Value::Timestamp(Timestamp::parse("2025-01-02 03:04:05").expect("valid ts"))
+            ),
+            "2025-01-02 03:04:05"
+        );
+        assert_eq!(
+            format!("{}", Value::Decimal(Decimal::parse("12.34").expect("valid decimal"))),
+            "12.34"
+        );
         assert_eq!(format!("{}", Value::Null), "NULL");
     }
 
@@ -127,11 +172,12 @@ mod tests {
         let int_val = Value::Integer(42);
         let bool_val = Value::Boolean(true);
         let str_val = Value::String("42".to_string());
+        let date_val = Value::Date(Date::parse("2025-01-02").expect("valid date"));
 
-        // Different types are ordered: Integer < Boolean < String
-        assert!(int_val < bool_val);
+        // Different types are ordered: Numeric < Date < Boolean < String
+        assert!(int_val < date_val);
+        assert!(date_val < bool_val);
         assert!(bool_val < str_val);
-        assert!(int_val < str_val);
     }
 
     #[test]

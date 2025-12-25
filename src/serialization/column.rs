@@ -12,6 +12,9 @@ enum TypeTag {
     Unsigned = 3,
     Float = 4,
     Null = 5,
+    Date = 6,
+    Timestamp = 7,
+    Decimal = 8,
 }
 
 impl TypeTag {
@@ -23,6 +26,9 @@ impl TypeTag {
             3 => Ok(TypeTag::Unsigned),
             4 => Ok(TypeTag::Float),
             5 => Ok(TypeTag::Null),
+            6 => Ok(TypeTag::Date),
+            7 => Ok(TypeTag::Timestamp),
+            8 => Ok(TypeTag::Decimal),
             _ => Err(SerializationError::InvalidTypeTag(value)),
         }
     }
@@ -35,6 +41,9 @@ impl TypeTag {
             Value::Unsigned(_) => TypeTag::Unsigned,
             Value::Float(_) => TypeTag::Float,
             Value::Null => TypeTag::Null,
+            Value::Date(_) => TypeTag::Date,
+            Value::Timestamp(_) => TypeTag::Timestamp,
+            Value::Decimal(_) => TypeTag::Decimal,
         }
     }
 }
@@ -145,6 +154,26 @@ impl ColumnSerializer {
                     codec::write_u8(&mut buf, 0)?;
                     codec::write_string(&mut buf, s)?;
                 }
+                Value::Date(d) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i32(&mut buf, d.year)?;
+                    codec::write_u8(&mut buf, d.month)?;
+                    codec::write_u8(&mut buf, d.day)?;
+                }
+                Value::Timestamp(t) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i32(&mut buf, t.year)?;
+                    codec::write_u8(&mut buf, t.month)?;
+                    codec::write_u8(&mut buf, t.day)?;
+                    codec::write_u8(&mut buf, t.hour)?;
+                    codec::write_u8(&mut buf, t.minute)?;
+                    codec::write_u8(&mut buf, t.second)?;
+                }
+                Value::Decimal(d) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i128(&mut buf, d.value)?;
+                    codec::write_u32(&mut buf, d.scale)?;
+                }
                 Value::Null => unreachable!("nulls handled above"),
             }
         }
@@ -201,6 +230,33 @@ impl ColumnSerializer {
                         expected: "NULL".to_string(),
                         found: "non-null".to_string(),
                     });
+                }
+                TypeTag::Date => {
+                    let year = codec::read_i32(&mut cursor)?;
+                    let month = codec::read_u8(&mut cursor)?;
+                    let day = codec::read_u8(&mut cursor)?;
+                    Value::Date(crate::types::Date { year, month, day })
+                }
+                TypeTag::Timestamp => {
+                    let year = codec::read_i32(&mut cursor)?;
+                    let month = codec::read_u8(&mut cursor)?;
+                    let day = codec::read_u8(&mut cursor)?;
+                    let hour = codec::read_u8(&mut cursor)?;
+                    let minute = codec::read_u8(&mut cursor)?;
+                    let second = codec::read_u8(&mut cursor)?;
+                    Value::Timestamp(crate::types::Timestamp {
+                        year,
+                        month,
+                        day,
+                        hour,
+                        minute,
+                        second,
+                    })
+                }
+                TypeTag::Decimal => {
+                    let value = codec::read_i128(&mut cursor)?;
+                    let scale = codec::read_u32(&mut cursor)?;
+                    Value::Decimal(crate::types::Decimal { value, scale })
                 }
             };
             values.push(value);

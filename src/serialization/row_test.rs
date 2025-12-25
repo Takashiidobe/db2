@@ -1,6 +1,6 @@
 mod tests {
     use crate::serialization::{RowSerializationError, RowSerializer, codec};
-    use crate::types::{Column, DataType, Schema, Value};
+    use crate::types::{Column, DataType, Date, Decimal, Schema, Timestamp, Value};
 
     fn create_test_schema() -> Schema {
         Schema::new(vec![
@@ -106,6 +106,26 @@ mod tests {
         let row = vec![
             Value::Integer(1),
             Value::String("Hello 世界 🌍".to_string()),
+        ];
+
+        let bytes = RowSerializer::serialize(&row, Some(&schema)).unwrap();
+        let deserialized = RowSerializer::deserialize(&bytes, &schema).unwrap();
+
+        assert_eq!(row, deserialized);
+    }
+
+    #[test]
+    fn test_date_timestamp_decimal_round_trip() {
+        let schema = Schema::new(vec![
+            Column::new("d", DataType::Date),
+            Column::new("t", DataType::Timestamp),
+            Column::new("n", DataType::Decimal),
+        ]);
+
+        let row = vec![
+            Value::Date(Date::parse("2025-01-02").expect("valid date")),
+            Value::Timestamp(Timestamp::parse("2025-01-02 03:04:05").expect("valid ts")),
+            Value::Decimal(Decimal::parse("12.340").expect("valid decimal")),
         ];
 
         let bytes = RowSerializer::serialize(&row, Some(&schema)).unwrap();

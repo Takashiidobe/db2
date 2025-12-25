@@ -7,4 +7,4 @@ mod schema_test;
 mod value_test;
 
 pub use schema::{Column, DataType, Schema, SchemaError};
-pub use value::Value;
+pub use value::{Date, Decimal, Timestamp, Value};

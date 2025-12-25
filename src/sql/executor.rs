@@ -444,6 +444,9 @@ impl Executor {
                     super::ast::DataType::Float => DbDataType::Float,
                     super::ast::DataType::Boolean => DbDataType::Boolean,
                     super::ast::DataType::Varchar => DbDataType::String,
+                    super::ast::DataType::Date => DbDataType::Date,
+                    super::ast::DataType::Timestamp => DbDataType::Timestamp,
+                    super::ast::DataType::Decimal => DbDataType::Decimal,
                 };
                 Column::new(&col.name, db_type)
             })
@@ -1891,6 +1894,30 @@ impl Executor {
             Literal::Float(fv) => Ok(Value::Float(*fv)),
             Literal::Boolean(b) => Ok(Value::Boolean(*b)),
             Literal::String(s) => Ok(Value::String(s.clone())),
+            Literal::Date(s) => {
+                let date = crate::types::Date::parse(s).map_err(|e| {
+                    io::Error::new(io::ErrorKind::InvalidInput, format!("Invalid DATE: {}", e))
+                })?;
+                Ok(Value::Date(date))
+            }
+            Literal::Timestamp(s) => {
+                let timestamp = crate::types::Timestamp::parse(s).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid TIMESTAMP: {}", e),
+                    )
+                })?;
+                Ok(Value::Timestamp(timestamp))
+            }
+            Literal::Decimal(s) => {
+                let decimal = crate::types::Decimal::parse(s).map_err(|e| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Invalid DECIMAL: {}", e),
+                    )
+                })?;
+                Ok(Value::Decimal(decimal))
+            }
             Literal::Null => Ok(Value::Null),
         }
     }
@@ -1922,6 +1949,29 @@ impl Executor {
             (DbDataType::Float, Value::Unsigned(u)) => Ok(Value::Float(u as f64)),
             (DbDataType::Boolean, Value::Boolean(b)) => Ok(Value::Boolean(b)),
             (DbDataType::String, Value::String(s)) => Ok(Value::String(s)),
+            (DbDataType::Date, Value::Date(d)) => Ok(Value::Date(d)),
+            (DbDataType::Date, Value::String(s)) => crate::types::Date::parse(&s)
+                .map(Value::Date)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)),
+            (DbDataType::Timestamp, Value::Timestamp(t)) => Ok(Value::Timestamp(t)),
+            (DbDataType::Timestamp, Value::String(s)) => crate::types::Timestamp::parse(&s)
+                .map(Value::Timestamp)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)),
+            (DbDataType::Decimal, Value::Decimal(d)) => Ok(Value::Decimal(d)),
+            (DbDataType::Decimal, Value::Integer(i)) => {
+                Ok(Value::Decimal(crate::types::Decimal::from_i128(i as i128)))
+            }
+            (DbDataType::Decimal, Value::Unsigned(u)) => Ok(Value::Decimal(
+                crate::types::Decimal::from_i128(u as i128),
+            )),
+            (DbDataType::Decimal, Value::Float(fv)) => crate::types::Decimal::from_f64(fv)
+                .map(Value::Decimal)
+                .ok_or_else(|| {
+                    io::Error::new(io::ErrorKind::InvalidInput, "Invalid decimal literal")
+                }),
+            (DbDataType::Decimal, Value::String(s)) => crate::types::Decimal::parse(&s)
+                .map(Value::Decimal)
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e)),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 format!("Type mismatch: expected {}", data_type),

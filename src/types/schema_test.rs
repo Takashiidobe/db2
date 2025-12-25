@@ -1,6 +1,6 @@
 #[cfg(test)]
 mod tests {
-    use crate::types::{Column, DataType, Schema, SchemaError, Value};
+    use crate::types::{Column, DataType, Date, Decimal, Schema, SchemaError, Timestamp, Value};
 
     #[test]
     fn test_data_type_matches() {
@@ -17,6 +17,15 @@ mod tests {
         assert!(!DataType::Boolean.matches(&Value::Integer(0)));
         assert!(DataType::String.matches(&Value::String("hello".to_string())));
         assert!(!DataType::String.matches(&Value::Integer(42)));
+        assert!(DataType::Date.matches(&Value::Date(
+            Date::parse("2025-01-02").expect("valid date"),
+        )));
+        assert!(DataType::Timestamp.matches(&Value::Timestamp(
+            Timestamp::parse("2025-01-02 03:04:05").expect("valid ts"),
+        )));
+        assert!(DataType::Decimal.matches(&Value::Decimal(
+            Decimal::parse("12.34").expect("valid decimal"),
+        )));
     }
 
     #[test]

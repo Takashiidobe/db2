@@ -315,6 +315,9 @@ pub(crate) fn serialize_schema(schema: &Schema) -> Vec<u8> {
             crate::types::DataType::Boolean => 2u8,
             crate::types::DataType::Unsigned => 3u8,
             crate::types::DataType::Float => 4u8,
+            crate::types::DataType::Date => 5u8,
+            crate::types::DataType::Timestamp => 6u8,
+            crate::types::DataType::Decimal => 7u8,
         };
         codec::write_u8(&mut buf, type_byte).unwrap();
     }
@@ -344,6 +347,9 @@ pub(crate) fn deserialize_schema(bytes: &[u8]) -> io::Result<Schema> {
             2 => DataType::Boolean,
             3 => DataType::Unsigned,
             4 => DataType::Float,
+            5 => DataType::Date,
+            6 => DataType::Timestamp,
+            7 => DataType::Decimal,
             _ => {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidData,

@@ -36,6 +36,18 @@ pub fn read_u32<R: Read>(reader: &mut R) -> io::Result<u32> {
     Ok(u32::from_le_bytes(buf))
 }
 
+/// Write an i32 (4 bytes, little-endian)
+pub fn write_i32<W: Write>(writer: &mut W, value: i32) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+/// Read an i32 (4 bytes, little-endian)
+pub fn read_i32<R: Read>(reader: &mut R) -> io::Result<i32> {
+    let mut buf = [0u8; 4];
+    reader.read_exact(&mut buf)?;
+    Ok(i32::from_le_bytes(buf))
+}
+
 /// Write an i64 (8 bytes, little-endian)
 pub fn write_i64<W: Write>(writer: &mut W, value: i64) -> io::Result<()> {
     writer.write_all(&value.to_le_bytes())
@@ -58,6 +70,18 @@ pub fn read_u64<R: Read>(reader: &mut R) -> io::Result<u64> {
     let mut buf = [0u8; 8];
     reader.read_exact(&mut buf)?;
     Ok(u64::from_le_bytes(buf))
+}
+
+/// Write an i128 (16 bytes, little-endian)
+pub fn write_i128<W: Write>(writer: &mut W, value: i128) -> io::Result<()> {
+    writer.write_all(&value.to_le_bytes())
+}
+
+/// Read an i128 (16 bytes, little-endian)
+pub fn read_i128<R: Read>(reader: &mut R) -> io::Result<i128> {
+    let mut buf = [0u8; 16];
+    reader.read_exact(&mut buf)?;
+    Ok(i128::from_le_bytes(buf))
 }
 
 /// Write an f64 (8 bytes, little-endian)

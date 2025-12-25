@@ -1,5 +1,5 @@
 use crate::serialization::codec;
-use crate::types::{Schema, Value};
+use crate::types::{Date, Decimal, Schema, Timestamp, Value};
 use std::io::{self, Cursor};
 
 /// Errors that can occur during row serialization/deserialization
@@ -129,6 +129,26 @@ impl RowSerializer {
                     codec::write_u8(&mut buf, 0)?;
                     codec::write_string(&mut buf, s)?;
                 }
+                Value::Date(d) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i32(&mut buf, d.year)?;
+                    codec::write_u8(&mut buf, d.month)?;
+                    codec::write_u8(&mut buf, d.day)?;
+                }
+                Value::Timestamp(t) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i32(&mut buf, t.year)?;
+                    codec::write_u8(&mut buf, t.month)?;
+                    codec::write_u8(&mut buf, t.day)?;
+                    codec::write_u8(&mut buf, t.hour)?;
+                    codec::write_u8(&mut buf, t.minute)?;
+                    codec::write_u8(&mut buf, t.second)?;
+                }
+                Value::Decimal(d) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i128(&mut buf, d.value)?;
+                    codec::write_u32(&mut buf, d.scale)?;
+                }
             }
         }
 
@@ -201,6 +221,33 @@ impl RowSerializer {
                 crate::types::DataType::String => {
                     let s = codec::read_string(&mut cursor)?;
                     Value::String(s)
+                }
+                crate::types::DataType::Date => {
+                    let year = codec::read_i32(&mut cursor)?;
+                    let month = codec::read_u8(&mut cursor)?;
+                    let day = codec::read_u8(&mut cursor)?;
+                    Value::Date(Date { year, month, day })
+                }
+                crate::types::DataType::Timestamp => {
+                    let year = codec::read_i32(&mut cursor)?;
+                    let month = codec::read_u8(&mut cursor)?;
+                    let day = codec::read_u8(&mut cursor)?;
+                    let hour = codec::read_u8(&mut cursor)?;
+                    let minute = codec::read_u8(&mut cursor)?;
+                    let second = codec::read_u8(&mut cursor)?;
+                    Value::Timestamp(Timestamp {
+                        year,
+                        month,
+                        day,
+                        hour,
+                        minute,
+                        second,
+                    })
+                }
+                crate::types::DataType::Decimal => {
+                    let value = codec::read_i128(&mut cursor)?;
+                    let scale = codec::read_u32(&mut cursor)?;
+                    Value::Decimal(Decimal { value, scale })
                 }
             };
             values.push(value);

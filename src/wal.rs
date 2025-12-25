@@ -92,6 +92,9 @@ enum ValueTag {
     Boolean = 3,
     String = 4,
     Null = 5,
+    Date = 6,
+    Timestamp = 7,
+    Decimal = 8,
 }
 
 impl ValueTag {
@@ -103,6 +106,9 @@ impl ValueTag {
             3 => Ok(ValueTag::Boolean),
             4 => Ok(ValueTag::String),
             5 => Ok(ValueTag::Null),
+            6 => Ok(ValueTag::Date),
+            7 => Ok(ValueTag::Timestamp),
+            8 => Ok(ValueTag::Decimal),
             _ => Err(WalError::InvalidValueTag(value)),
         }
     }
@@ -115,6 +121,9 @@ impl ValueTag {
             Value::Boolean(_) => ValueTag::Boolean,
             Value::String(_) => ValueTag::String,
             Value::Null => ValueTag::Null,
+            Value::Date(_) => ValueTag::Date,
+            Value::Timestamp(_) => ValueTag::Timestamp,
+            Value::Decimal(_) => ValueTag::Decimal,
         }
     }
 }
@@ -343,6 +352,23 @@ fn write_value(buf: &mut Vec<u8>, value: &Value) -> io::Result<()> {
         Value::Boolean(b) => codec::write_u8(buf, *b as u8),
         Value::String(s) => codec::write_string(buf, s),
         Value::Null => Ok(()),
+        Value::Date(d) => {
+            codec::write_i32(buf, d.year)?;
+            codec::write_u8(buf, d.month)?;
+            codec::write_u8(buf, d.day)
+        }
+        Value::Timestamp(t) => {
+            codec::write_i32(buf, t.year)?;
+            codec::write_u8(buf, t.month)?;
+            codec::write_u8(buf, t.day)?;
+            codec::write_u8(buf, t.hour)?;
+            codec::write_u8(buf, t.minute)?;
+            codec::write_u8(buf, t.second)
+        }
+        Value::Decimal(d) => {
+            codec::write_i128(buf, d.value)?;
+            codec::write_u32(buf, d.scale)
+        }
     }
 }
 
@@ -355,6 +381,33 @@ fn read_value(cursor: &mut Cursor<&[u8]>) -> Result<Value, WalError> {
         ValueTag::Boolean => Value::Boolean(codec::read_u8(cursor)? != 0),
         ValueTag::String => Value::String(codec::read_string(cursor)?),
         ValueTag::Null => Value::Null,
+        ValueTag::Date => {
+            let year = codec::read_i32(cursor)?;
+            let month = codec::read_u8(cursor)?;
+            let day = codec::read_u8(cursor)?;
+            Value::Date(crate::types::Date { year, month, day })
+        }
+        ValueTag::Timestamp => {
+            let year = codec::read_i32(cursor)?;
+            let month = codec::read_u8(cursor)?;
+            let day = codec::read_u8(cursor)?;
+            let hour = codec::read_u8(cursor)?;
+            let minute = codec::read_u8(cursor)?;
+            let second = codec::read_u8(cursor)?;
+            Value::Timestamp(crate::types::Timestamp {
+                year,
+                month,
+                day,
+                hour,
+                minute,
+                second,
+            })
+        }
+        ValueTag::Decimal => {
+            let value = codec::read_i128(cursor)?;
+            let scale = codec::read_u32(cursor)?;
+            Value::Decimal(crate::types::Decimal { value, scale })
+        }
     };
     Ok(value)
 }

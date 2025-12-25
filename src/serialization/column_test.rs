@@ -127,6 +127,45 @@ mod tests {
     }
 
     #[test]
+    fn test_round_trip_dates() {
+        let original = vec![
+            Value::Date(Date::parse("2025-01-02").expect("valid date")),
+            Value::Date(Date::parse("2024-12-31").expect("valid date")),
+        ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_round_trip_timestamps() {
+        let original = vec![
+            Value::Timestamp(Timestamp::parse("2025-01-02 03:04:05").expect("valid ts")),
+            Value::Timestamp(Timestamp::parse("2025-12-31 23:59:59").expect("valid ts")),
+        ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
+    fn test_round_trip_decimals() {
+        let original = vec![
+            Value::Decimal(Decimal::parse("12.340").expect("valid decimal")),
+            Value::Decimal(Decimal::parse("-0.001").expect("valid decimal")),
+        ];
+
+        let bytes = ColumnSerializer::serialize(&original).unwrap();
+        let deserialized = ColumnSerializer::deserialize(&bytes).unwrap();
+
+        assert_eq!(original, deserialized);
+    }
+
+    #[test]
     fn test_empty_column_error() {
         let values: Vec<Value> = vec![];
         let result = ColumnSerializer::serialize(&values);

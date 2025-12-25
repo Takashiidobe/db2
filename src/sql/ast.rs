@@ -6,6 +6,9 @@ pub enum DataType {
     Float,
     Boolean,
     Varchar,
+    Date,
+    Timestamp,
+    Decimal,
 }
 
 impl std::fmt::Display for DataType {
@@ -16,6 +19,9 @@ impl std::fmt::Display for DataType {
             DataType::Float => write!(f, "FLOAT"),
             DataType::Boolean => write!(f, "BOOLEAN"),
             DataType::Varchar => write!(f, "VARCHAR"),
+            DataType::Date => write!(f, "DATE"),
+            DataType::Timestamp => write!(f, "TIMESTAMP"),
+            DataType::Decimal => write!(f, "DECIMAL"),
         }
     }
 }
@@ -84,6 +90,9 @@ pub enum Literal {
     Float(f64),
     Boolean(bool),
     String(String),
+    Date(String),
+    Timestamp(String),
+    Decimal(String),
     Null,
 }
 
@@ -94,6 +103,9 @@ impl PartialEq for Literal {
             (Literal::Float(a), Literal::Float(b)) => a.to_bits() == b.to_bits(),
             (Literal::Boolean(a), Literal::Boolean(b)) => a == b,
             (Literal::String(a), Literal::String(b)) => a == b,
+            (Literal::Date(a), Literal::Date(b)) => a == b,
+            (Literal::Timestamp(a), Literal::Timestamp(b)) => a == b,
+            (Literal::Decimal(a), Literal::Decimal(b)) => a == b,
             _ => false,
         }
     }
@@ -108,6 +120,9 @@ impl std::fmt::Display for Literal {
             Literal::Float(fl) => write!(f, "{}", fl),
             Literal::Boolean(b) => write!(f, "{}", b),
             Literal::String(s) => write!(f, "'{}'", s),
+            Literal::Date(s) => write!(f, "DATE '{}'", s),
+            Literal::Timestamp(s) => write!(f, "TIMESTAMP '{}'", s),
+            Literal::Decimal(s) => write!(f, "DECIMAL '{}'", s),
             Literal::Null => write!(f, "NULL"),
         }
     }
