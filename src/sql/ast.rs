@@ -179,6 +179,11 @@ pub enum Expr {
     Column(ColumnRef),
     /// Literal value
     Literal(Literal),
+    /// IN subquery
+    InSubquery {
+        expr: Box<Expr>,
+        subquery: Box<SelectStmt>,
+    },
     /// Binary operation (e.g., col = 5)
     BinaryOp {
         left: Box<Expr>,
@@ -194,6 +199,13 @@ impl Expr {
             left: Box::new(left),
             op,
             right: Box::new(right),
+        }
+    }
+
+    pub fn in_subquery(expr: Expr, subquery: SelectStmt) -> Self {
+        Expr::InSubquery {
+            expr: Box::new(expr),
+            subquery: Box::new(subquery),
         }
     }
 }

@@ -1420,16 +1420,15 @@ impl Executor {
         };
 
         // Get the table again for mutable access
-        let table = self.tables.get_mut(&table_name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Table '{}' does not exist", table_name),
-            )
-        })?;
-
         let mut result_rows = Vec::new();
 
         if let Some(row_ids) = row_ids {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
             // Index scan: fetch specific rows
             for row_id in row_ids {
                 let (meta, row) = table.get_with_metadata(row_id)?;
@@ -1442,15 +1441,15 @@ impl Executor {
                     continue;
                 }
 
-                if let Some(ref where_expr) = where_clause
-                    && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
-                {
-                    continue;
-                }
-
                 result_rows.push(row);
             }
         } else {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
             // Table scan: scan all rows and filter
             let mut scan = TableScan::new(table);
 
@@ -1463,15 +1462,18 @@ impl Executor {
                 ) {
                     continue;
                 }
-                // Apply WHERE clause filter if present
-                if let Some(ref where_expr) = where_clause
-                    && !Self::evaluate_predicate_static(where_expr, &row, &columns_meta)?
-                {
-                    continue;
-                }
-
                 result_rows.push(row);
             }
+        }
+
+        if let Some(ref where_expr) = where_clause {
+            let mut filtered = Vec::with_capacity(result_rows.len());
+            for row in result_rows {
+                if self.evaluate_predicate(where_expr, &row, &columns_meta)? {
+                    filtered.push(row);
+                }
+            }
+            result_rows = filtered;
         }
 
         let (column_names, mut result_rows, output_meta) =
@@ -1761,7 +1763,7 @@ impl Executor {
                 combined_row.extend(right_row);
 
                 if let Some(ref where_expr) = where_clause
-                    && !Self::evaluate_predicate_static(where_expr, &combined_row, combined_meta)?
+                    && !self.evaluate_predicate(where_expr, &combined_row, combined_meta)?
                 {
                     continue;
                 }
@@ -1854,11 +1856,7 @@ impl Executor {
                             combined.extend(right_rows[rj].1.clone());
 
                             if let Some(ref where_expr) = where_clause
-                                && !Self::evaluate_predicate_static(
-                                    where_expr,
-                                    &combined,
-                                    combined_meta,
-                                )?
+                                && !self.evaluate_predicate(where_expr, &combined, combined_meta)?
                             {
                                 continue;
                             }
@@ -2164,6 +2162,83 @@ impl Executor {
         }
     }
 
+    fn evaluate_predicate(
+        &mut self,
+        expr: &Expr,
+        row: &[Value],
+        columns: &[(Option<String>, String)],
+    ) -> io::Result<bool> {
+        match expr {
+            Expr::InSubquery { expr, subquery } => {
+                let left_val = Self::evaluate_expr_static(expr, row, columns)?;
+                if left_val.is_null() {
+                    return Ok(false);
+                }
+                let result = self.execute_select((**subquery).clone())?;
+                let (column_names, rows) = match result {
+                    ExecutionResult::Select {
+                        column_names, rows, ..
+                    } => (column_names, rows),
+                    _ => {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            "Subquery must be a SELECT",
+                        ));
+                    }
+                };
+                if column_names.len() != 1 {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Subquery must return exactly one column",
+                    ));
+                }
+                for row in rows {
+                    if let Some(value) = row.get(0) {
+                        if value.is_null() {
+                            continue;
+                        }
+                        if *value == left_val {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            Expr::BinaryOp { left, op, right } => {
+                if *op == BinaryOp::And {
+                    let left_result = self.evaluate_predicate(left, row, columns)?;
+                    if !left_result {
+                        return Ok(false);
+                    }
+                    return self.evaluate_predicate(right, row, columns);
+                }
+
+                let left_val = Self::evaluate_expr_static(left, row, columns)?;
+                let right_val = Self::evaluate_expr_static(right, row, columns)?;
+
+                if left_val.is_null() || right_val.is_null() {
+                    return Ok(false);
+                }
+
+                let result = match op {
+                    BinaryOp::Eq => left_val == right_val,
+                    BinaryOp::NotEq => left_val != right_val,
+                    BinaryOp::Lt => left_val < right_val,
+                    BinaryOp::LtEq => left_val <= right_val,
+                    BinaryOp::Gt => left_val > right_val,
+                    BinaryOp::GtEq => left_val >= right_val,
+                    BinaryOp::And => unreachable!(),
+                };
+
+                Ok(result)
+            }
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "WHERE clause must be a comparison expression",
+            )),
+        }
+    }
+
     /// Evaluate an expression to a value (static version)
     fn evaluate_expr_static(
         expr: &Expr,
@@ -2173,6 +2248,10 @@ impl Executor {
         match expr {
             Expr::Column(col_ref) => Self::resolve_column_value(row, columns, col_ref),
             Expr::Literal(lit) => Self::literal_to_value(lit),
+            Expr::InSubquery { .. } => Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "Subquery expressions cannot be evaluated as values",
+            )),
             Expr::BinaryOp { .. } => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Binary operations cannot be directly evaluated as values",
@@ -3213,6 +3292,9 @@ impl Executor {
                 Self::format_binary_op(*op),
                 Self::describe_expr(right)
             ),
+            Expr::InSubquery { expr, .. } => {
+                format!("{} IN (subquery)", Self::describe_expr(expr))
+            }
         }
     }
 

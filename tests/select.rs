@@ -316,6 +316,28 @@ fn test_select_distinct() {
 }
 
 #[test]
+fn test_select_in_subquery() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("CREATE TABLE orders (user_id INTEGER)");
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob'), (3, 'Cara')");
+    db.execute_ok("INSERT INTO orders VALUES (1), (3)");
+
+    let result = db.execute_ok(
+        "SELECT id, name FROM users WHERE id IN (SELECT user_id FROM orders) ORDER BY id ASC",
+    );
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 2);
+            assert_eq!(rows[0][0], Value::Integer(1));
+            assert_eq!(rows[1][0], Value::Integer(3));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
 fn test_select_where_no_matches() {
     let mut db = TestDb::new().unwrap();
 

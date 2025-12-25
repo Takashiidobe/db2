@@ -304,6 +304,20 @@ mod tests {
     }
 
     #[test]
+    fn test_parse_in_subquery() {
+        let sql = "SELECT * FROM users WHERE id IN (SELECT user_id FROM orders)";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::Select(select) => {
+                let where_expr = select.where_clause.expect("where clause");
+                assert!(matches!(where_expr, Expr::InSubquery { .. }));
+            }
+            _ => panic!("Expected Select statement"),
+        }
+    }
+
+    #[test]
     fn test_parse_create_table_single_column() {
         let sql = "CREATE TABLE test (id INTEGER)";
         let stmt = parse_sql(sql).unwrap();

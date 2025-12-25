@@ -63,6 +63,7 @@ pub(crate) enum Token {
     Min,
     Max,
     Distinct,
+    In,
     True,
     False,
     Select,
@@ -143,6 +144,7 @@ impl PartialEq for Token {
             | (Token::Min, Token::Min)
             | (Token::Max, Token::Max)
             | (Token::Distinct, Token::Distinct)
+            | (Token::In, Token::In)
             | (Token::True, Token::True)
             | (Token::False, Token::False)
             | (Token::Select, Token::Select)
@@ -222,6 +224,7 @@ impl std::fmt::Display for Token {
             Token::Min => write!(f, "MIN"),
             Token::Max => write!(f, "MAX"),
             Token::Distinct => write!(f, "DISTINCT"),
+            Token::In => write!(f, "IN"),
             Token::Select => write!(f, "SELECT"),
             Token::From => write!(f, "FROM"),
             Token::Where => write!(f, "WHERE"),
@@ -532,6 +535,7 @@ impl Tokenizer {
                     "MIN" => Token::Min,
                     "MAX" => Token::Max,
                     "DISTINCT" => Token::Distinct,
+                    "IN" => Token::In,
                     "SELECT" => Token::Select,
                     "FROM" => Token::From,
                     "WHERE" => Token::Where,
@@ -1222,6 +1226,13 @@ impl Parser {
                 let op = self.parse_binary_op()?;
                 let right = self.parse_primary_expr()?;
                 Ok(Expr::binary_op(left, op, right))
+            }
+            Token::In => {
+                self.advance();
+                self.expect(Token::LeftParen)?;
+                let subquery = self.parse_select()?;
+                self.expect(Token::RightParen)?;
+                Ok(Expr::in_subquery(left, subquery))
             }
             _ => Ok(left),
         }
