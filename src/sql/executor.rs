@@ -7,7 +7,7 @@ use crate::index::{BPlusTree, HashIndex};
 use crate::optimizer::planner::{
     FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
 };
-use crate::serialization::RowMetadata;
+use crate::serialization::{RowMetadata, RowSerializer};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use crate::wal::{WalFile, WalRecord, TxnId};
@@ -730,22 +730,37 @@ impl Executor {
             })?;
 
             for (row_id, before_row, new_row) in pending_updates {
-                match table.update(row_id, &new_row) {
-                    Ok(_) => {
-                        rows_updated += 1;
-                        if let Some((txn_id, _)) = wal_context {
-                            wal_records.push(WalRecord::Update {
-                                txn_id,
-                                table: table_name.clone(),
-                                row_id,
-                                before: before_row,
-                                after: new_row,
-                            });
-                        }
-                    }
-                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
-                    Err(e) => return Err(e),
-                }
+                let (txn_id, _) = match wal_context {
+                    Some(context) => context,
+                    None => continue,
+                };
+
+                let (mut old_meta, old_values) = table.get_with_metadata(row_id)?;
+                let new_meta = RowMetadata { xmin: txn_id, xmax: 0 };
+                let _new_row_id = table.insert_with_metadata(&new_row, new_meta)?;
+
+                old_meta.xmax = txn_id;
+                let serialized = RowSerializer::serialize_with_metadata(
+                    &old_values,
+                    Some(table.schema()),
+                    old_meta,
+                )
+                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
+                page.update_row(row_id.slot_id(), &serialized)
+                    .map_err(io::Error::from)?;
+                table
+                    .buffer_pool_mut()
+                    .unpin_page(row_id.page_id(), true);
+
+                rows_updated += 1;
+                wal_records.push(WalRecord::Update {
+                    txn_id,
+                    table: table_name.clone(),
+                    row_id,
+                    before: before_row,
+                    after: new_row,
+                });
             }
         }
 
@@ -2196,7 +2211,7 @@ impl Executor {
 
     fn is_visible_for_snapshot(meta: &RowMetadata, snapshot: Option<&Snapshot>) -> bool {
         let Some(snapshot) = snapshot else {
-            return true;
+            return meta.xmax == 0;
         };
 
         if meta.xmin != 0 {
