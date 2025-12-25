@@ -1,8 +1,8 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
-use db::types::Value;
+use db2::sql::ExecutionResult;
+use db2::types::Value;
 
 // Basic SELECT tests
 
@@ -15,7 +15,9 @@ fn test_select_star() {
 
     let result = db.execute_ok("SELECT * FROM users");
     match &result {
-        ExecutionResult::Select { column_names, rows, .. } => {
+        ExecutionResult::Select {
+            column_names, rows, ..
+        } => {
             assert_eq!(column_names.len(), 2);
             assert_eq!(rows.len(), 2);
         }
@@ -32,7 +34,9 @@ fn test_select_specific_columns() {
 
     let result = db.execute_ok("SELECT name, id FROM users");
     match &result {
-        ExecutionResult::Select { column_names, rows, .. } => {
+        ExecutionResult::Select {
+            column_names, rows, ..
+        } => {
             assert_eq!(column_names, &vec!["name", "id"]);
             assert_eq!(rows.len(), 1);
             assert_eq!(rows[0][0], Value::String("Alice".to_string()));
@@ -322,7 +326,7 @@ fn test_select_join_with_where() {
     db.execute_ok("INSERT INTO orders VALUES (1, 100), (2, 200), (1, 150)");
 
     let result = db.execute_ok(
-        "SELECT * FROM users JOIN orders ON users.id = orders.user_id WHERE amount > 120"
+        "SELECT * FROM users JOIN orders ON users.id = orders.user_id WHERE amount > 120",
     );
     match &result {
         ExecutionResult::Select { rows, .. } => {
@@ -361,7 +365,8 @@ fn test_select_specific_columns_after_join() {
     db.execute_ok("INSERT INTO users VALUES (1, 'Alice')");
     db.execute_ok("INSERT INTO orders VALUES (1, 'Book')");
 
-    let result = db.execute_ok("SELECT name, product FROM users JOIN orders ON users.id = orders.user_id");
+    let result =
+        db.execute_ok("SELECT name, product FROM users JOIN orders ON users.id = orders.user_id");
     match &result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);

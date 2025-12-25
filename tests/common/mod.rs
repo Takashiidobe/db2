@@ -1,4 +1,4 @@
-use db::sql::{parse_sql, Executor, ExecutionResult};
+use db2::sql::{ExecutionResult, Executor, parse_sql};
 use std::io;
 use std::path::Path;
 use tempfile::TempDir;
@@ -26,14 +26,17 @@ impl TestDb {
 
     /// Execute a SQL statement and expect success
     pub fn execute_ok(&mut self, sql: &str) -> ExecutionResult {
-        self.execute(sql)
-            .unwrap_or_else(|e| panic!("Expected SQL to succeed but got error: {}\nSQL: {}", e, sql))
+        self.execute(sql).unwrap_or_else(|e| {
+            panic!("Expected SQL to succeed but got error: {}\nSQL: {}", e, sql)
+        })
     }
 
     /// Execute a SQL statement and expect failure
     pub fn execute_err(&mut self, sql: &str) -> io::Error {
-        self.execute(sql)
-            .expect_err(&format!("Expected SQL to fail but it succeeded\nSQL: {}", sql))
+        self.execute(sql).expect_err(&format!(
+            "Expected SQL to fail but it succeeded\nSQL: {}",
+            sql
+        ))
     }
 
     /// Get the path to the database directory
@@ -42,7 +45,7 @@ impl TestDb {
     }
 
     /// List all tables
-    pub fn list_tables(&self) -> Vec<(String, db::types::Schema)> {
+    pub fn list_tables(&self) -> Vec<(String, db2::types::Schema)> {
         self.executor.list_tables()
     }
 
@@ -89,7 +92,10 @@ macro_rules! assert_insert {
             ExecutionResult::Insert { row_ids } => {
                 assert_eq!(row_ids.len(), $row_count);
             }
-            other => panic!("Expected Insert result with {} rows, got: {:?}", $row_count, other),
+            other => panic!(
+                "Expected Insert result with {} rows, got: {:?}",
+                $row_count, other
+            ),
         }
     };
 }
@@ -99,7 +105,13 @@ macro_rules! assert_select {
     ($result:expr, $row_count:expr) => {
         match &$result {
             ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), $row_count, "Expected {} rows, got {}", $row_count, rows.len());
+                assert_eq!(
+                    rows.len(),
+                    $row_count,
+                    "Expected {} rows, got {}",
+                    $row_count,
+                    rows.len()
+                );
             }
             other => panic!("Expected Select result, got: {:?}", other),
         }
@@ -110,7 +122,11 @@ macro_rules! assert_select {
 macro_rules! assert_create_index {
     ($result:expr, $index_name:expr, $table_name:expr) => {
         match $result {
-            ExecutionResult::CreateIndex { index_name, table_name, .. } => {
+            ExecutionResult::CreateIndex {
+                index_name,
+                table_name,
+                ..
+            } => {
                 assert_eq!(index_name, $index_name);
                 assert_eq!(table_name, $table_name);
             }

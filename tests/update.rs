@@ -1,8 +1,8 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
-use db::types::Value;
+use db2::sql::ExecutionResult;
+use db2::types::Value;
 
 #[test]
 fn test_update_all_rows() {
@@ -124,4 +124,3 @@ fn test_update_nonexistent_table() {
     let err = db.execute_err("UPDATE missing SET name = 'nope'");
     assert!(err.to_string().contains("does not exist"));
 }
-

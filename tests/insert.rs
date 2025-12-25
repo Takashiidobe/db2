@@ -1,8 +1,8 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
-use db::types::Value;
+use db2::sql::ExecutionResult;
+use db2::types::Value;
 
 #[test]
 fn test_insert_single_row() {
@@ -167,17 +167,17 @@ fn test_insert_persistence() {
     let db_path = temp_dir.path().to_path_buf();
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap();
         executor.execute(stmt).unwrap();
-        let stmt = db::sql::parse_sql("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
+        let stmt = db2::sql::parse_sql("INSERT INTO users VALUES (1, 'Alice'), (2, 'Bob')").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("SELECT * FROM users").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("SELECT * FROM users").unwrap();
         let result = executor.execute(stmt).unwrap();
 
         match result {

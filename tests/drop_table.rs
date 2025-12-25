@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
+use db2::sql::ExecutionResult;
 
 #[test]
 fn test_drop_table_simple() {
@@ -91,7 +91,11 @@ fn test_drop_table_multiple() {
     db.execute_ok("DROP TABLE orders");
     assert_eq!(db.list_tables().len(), 2);
 
-    let table_names: Vec<String> = db.list_tables().iter().map(|(name, _)| name.clone()).collect();
+    let table_names: Vec<String> = db
+        .list_tables()
+        .iter()
+        .map(|(name, _)| name.clone())
+        .collect();
     assert!(table_names.contains(&"users".to_string()));
     assert!(table_names.contains(&"products".to_string()));
     assert!(!table_names.contains(&"orders".to_string()));
@@ -107,21 +111,21 @@ fn test_drop_table_persistence() {
     let db_path = temp_dir.path().to_path_buf();
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("CREATE TABLE persistent (id INTEGER)").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE persistent (id INTEGER)").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("DROP TABLE persistent").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("DROP TABLE persistent").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let executor = db::sql::Executor::new(&db_path, 100).unwrap();
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         let tables = executor.list_tables();
         assert_eq!(tables.len(), 0);
     }

@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
+use db2::sql::ExecutionResult;
 
 #[test]
 fn test_drop_index_simple() {
@@ -88,24 +88,24 @@ fn test_drop_index_persistence() {
     let db_path = temp_dir.path().to_path_buf();
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("CREATE TABLE users (id INTEGER)").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER)").unwrap();
         executor.execute(stmt).unwrap();
-        let stmt = db::sql::parse_sql("CREATE INDEX idx_id ON users(id)").unwrap();
+        let stmt = db2::sql::parse_sql("CREATE INDEX idx_id ON users(id)").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         assert_eq!(executor.list_indexes().len(), 1);
-        let stmt = db::sql::parse_sql("DROP INDEX idx_id").unwrap();
+        let stmt = db2::sql::parse_sql("DROP INDEX idx_id").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let executor = db::sql::Executor::new(&db_path, 100).unwrap();
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         assert_eq!(executor.list_indexes().len(), 0);
     }
 }

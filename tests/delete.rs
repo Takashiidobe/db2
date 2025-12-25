@@ -1,8 +1,8 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
-use db::types::Value;
+use db2::sql::ExecutionResult;
+use db2::types::Value;
 
 #[test]
 fn test_delete_all_rows() {

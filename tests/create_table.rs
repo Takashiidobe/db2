@@ -1,8 +1,8 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
-use db::types::DataType;
+use db2::sql::ExecutionResult;
+use db2::types::DataType;
 
 #[test]
 fn test_create_table_simple() {
@@ -37,9 +37,8 @@ fn test_create_table_simple() {
 fn test_create_table_all_types() {
     let mut db = TestDb::new().unwrap();
 
-    let result = db.execute_ok(
-        "CREATE TABLE all_types (int_col INTEGER, bool_col BOOLEAN, str_col VARCHAR)"
-    );
+    let result = db
+        .execute_ok("CREATE TABLE all_types (int_col INTEGER, bool_col BOOLEAN, str_col VARCHAR)");
 
     match result {
         ExecutionResult::CreateTable { table_name } => {
@@ -72,14 +71,15 @@ fn test_create_table_persistence() {
     let db_path = temp_dir.path().to_path_buf();
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("CREATE TABLE persistent (id INTEGER, data VARCHAR)").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt =
+            db2::sql::parse_sql("CREATE TABLE persistent (id INTEGER, data VARCHAR)").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let executor = db::sql::Executor::new(&db_path, 100).unwrap();
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         let tables = executor.list_tables();
         assert_eq!(tables.len(), 1);
         assert_eq!(tables[0].0, "persistent");

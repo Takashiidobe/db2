@@ -1,7 +1,7 @@
 mod common;
 
 use common::TestDb;
-use db::sql::ExecutionResult;
+use db2::sql::ExecutionResult;
 
 #[test]
 fn test_create_index_simple() {
@@ -11,7 +11,11 @@ fn test_create_index_simple() {
     let result = db.execute_ok("CREATE INDEX idx_user_id ON users(id)");
 
     match result {
-        ExecutionResult::CreateIndex { index_name, table_name, columns } => {
+        ExecutionResult::CreateIndex {
+            index_name,
+            table_name,
+            columns,
+        } => {
             assert_eq!(index_name, "idx_user_id");
             assert_eq!(table_name, "users");
             assert_eq!(columns, vec!["id"]);
@@ -114,16 +118,16 @@ fn test_create_index_persistence() {
     let db_path = temp_dir.path().to_path_buf();
 
     {
-        let mut executor = db::sql::Executor::new(&db_path, 100).unwrap();
-        let stmt = db::sql::parse_sql("CREATE TABLE users (id INTEGER, age INTEGER)").unwrap();
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER, age INTEGER)").unwrap();
         executor.execute(stmt).unwrap();
-        let stmt = db::sql::parse_sql("CREATE INDEX idx_id ON users(id)").unwrap();
+        let stmt = db2::sql::parse_sql("CREATE INDEX idx_id ON users(id)").unwrap();
         executor.execute(stmt).unwrap();
         executor.flush_all().unwrap();
     }
 
     {
-        let executor = db::sql::Executor::new(&db_path, 100).unwrap();
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
         let indexes = executor.list_indexes();
         assert_eq!(indexes.len(), 1);
         assert_eq!(indexes[0].0, "idx_id");
