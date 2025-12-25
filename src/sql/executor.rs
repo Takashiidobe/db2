@@ -500,6 +500,8 @@ impl Executor {
         };
 
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
 
         // Collect target rows
         let rows_to_delete: Vec<(RowId, Vec<Value>)> = {
@@ -516,7 +518,12 @@ impl Executor {
                 for row_id in row_ids {
                     let row = match table.get_with_metadata(row_id) {
                         Ok((meta, row)) => {
-                            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                            if !Self::is_visible_for_snapshot(
+                                &meta,
+                                snapshot.as_ref(),
+                                current_txn_id,
+                                &txn_states,
+                            ) {
                                 continue;
                             }
                             row
@@ -536,7 +543,12 @@ impl Executor {
             } else {
                 let mut scan = TableScan::new(table);
                 while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
-                    if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    if !Self::is_visible_for_snapshot(
+                        &meta,
+                        snapshot.as_ref(),
+                        current_txn_id,
+                        &txn_states,
+                    ) {
                         continue;
                     }
                     if let Some(ref expr) = where_clause
@@ -677,6 +689,8 @@ impl Executor {
         };
 
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
         let mut rows_updated = 0;
         let pending_updates: Vec<(RowId, Vec<Value>, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
@@ -692,7 +706,12 @@ impl Executor {
                 for row_id in row_ids {
                     let row = match table.get_with_metadata(row_id) {
                         Ok((meta, row)) => {
-                            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                            if !Self::is_visible_for_snapshot(
+                                &meta,
+                                snapshot.as_ref(),
+                                current_txn_id,
+                                &txn_states,
+                            ) {
                                 continue;
                             }
                             row
@@ -714,7 +733,12 @@ impl Executor {
             } else {
                 let mut scan = TableScan::new(table);
                 while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
-                    if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                    if !Self::is_visible_for_snapshot(
+                        &meta,
+                        snapshot.as_ref(),
+                        current_txn_id,
+                        &txn_states,
+                    ) {
                         continue;
                     }
                     if let Some(ref expr) = where_clause
@@ -1128,6 +1152,8 @@ impl Executor {
             Self::build_projection(&columns_meta, &columns, false)?;
 
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
 
         let row_ids = match scan_plan {
             ScanPlan::IndexScan {
@@ -1152,7 +1178,12 @@ impl Executor {
             // Index scan: fetch specific rows
             for row_id in row_ids {
                 let (meta, row) = table.get_with_metadata(row_id)?;
-                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
                     continue;
                 }
 
@@ -1173,7 +1204,12 @@ impl Executor {
             let mut scan = TableScan::new(table);
 
             while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
-                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
                     continue;
                 }
                 // Apply WHERE clause filter if present
@@ -1284,6 +1320,8 @@ impl Executor {
         inner_has_index: bool,
     ) -> io::Result<ExecutionResult> {
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
 
         // Preload left rows (outer loop)
         let left_rows = {
@@ -1296,7 +1334,12 @@ impl Executor {
             })?;
             let mut scan = TableScan::new(left_table_ref);
             while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
-                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
                     continue;
                 }
                 rows.push(row);
@@ -1352,7 +1395,12 @@ impl Executor {
             })?;
             let mut scan = TableScan::new(right_table_ref);
             while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
-                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
                     continue;
                 }
                 rows.push(row);
@@ -1389,7 +1437,12 @@ impl Executor {
                                 )
                             })?;
                         let (meta, row) = right_table_ref.get_with_metadata(row_id)?;
-                        if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                        if !Self::is_visible_for_snapshot(
+                            &meta,
+                            snapshot.as_ref(),
+                            current_txn_id,
+                            &txn_states,
+                        ) {
                             continue;
                         }
                         row
@@ -1519,6 +1572,8 @@ impl Executor {
         join_idx: usize,
     ) -> io::Result<Vec<(Value, Vec<Value>)>> {
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
         let table_ref = self.tables.get_mut(table_name).ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::NotFound,
@@ -1529,7 +1584,12 @@ impl Executor {
         let mut scan = TableScan::new(table_ref);
         let mut rows = Vec::new();
         while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
-            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+            if !Self::is_visible_for_snapshot(
+                &meta,
+                snapshot.as_ref(),
+                current_txn_id,
+                &txn_states,
+            ) {
                 continue;
             }
             if join_idx >= row.len() {
@@ -1739,6 +1799,8 @@ impl Executor {
 
     fn rebuild_indexes_for_table(&mut self, table_name: &str) -> io::Result<()> {
         let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
         let rows = {
             let table = self.tables.get_mut(table_name).ok_or_else(|| {
                 io::Error::new(
@@ -1750,7 +1812,12 @@ impl Executor {
             let mut scan = TableScan::new(table);
             let mut rows = Vec::new();
             while let Some((row_id, meta, row)) = scan.next_with_metadata()? {
-                if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref()) {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
                     continue;
                 }
                 rows.push((row_id, row));
@@ -2233,26 +2300,56 @@ impl Executor {
         }
     }
 
-    fn is_visible_for_snapshot(meta: &RowMetadata, snapshot: Option<&Snapshot>) -> bool {
-        let Some(snapshot) = snapshot else {
-            return meta.xmax == 0;
-        };
-
-        if meta.xmin != 0 {
-            if meta.xmin >= snapshot.xmax || snapshot.active.contains(&meta.xmin) {
-                return false;
+    fn is_visible_for_snapshot(
+        meta: &RowMetadata,
+        snapshot: Option<&Snapshot>,
+        current_txn_id: Option<TxnId>,
+        txn_states: &HashMap<TxnId, TxnState>,
+    ) -> bool {
+        let creator = meta.xmin;
+        if creator != 0 {
+            if Some(creator) != current_txn_id {
+                let creator_state = txn_states
+                    .get(&creator)
+                    .copied()
+                    .unwrap_or(TxnState::Committed);
+                if creator_state != TxnState::Committed {
+                    return false;
+                }
+                if let Some(snapshot) = snapshot {
+                    if creator >= snapshot.xmax || snapshot.active.contains(&creator) {
+                        return false;
+                    }
+                }
             }
         }
 
-        if meta.xmax == 0 {
+        let deleter = meta.xmax;
+        if deleter == 0 {
             return true;
         }
 
-        if meta.xmax >= snapshot.xmax || snapshot.active.contains(&meta.xmax) {
-            return true;
+        if Some(deleter) == current_txn_id {
+            return false;
         }
 
-        false
+        let deleter_state = txn_states
+            .get(&deleter)
+            .copied()
+            .unwrap_or(TxnState::Committed);
+
+        match snapshot {
+            None => deleter_state != TxnState::Committed,
+            Some(snapshot) => match deleter_state {
+                TxnState::Committed => {
+                    if deleter < snapshot.xmax && !snapshot.active.contains(&deleter) {
+                        return false;
+                    }
+                    true
+                }
+                TxnState::Active | TxnState::Aborted => true,
+            },
+        }
     }
 
     /// Flush all tables

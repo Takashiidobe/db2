@@ -1084,6 +1084,163 @@ mod tests {
     }
 
     #[test]
+    fn test_visibility_skips_aborted_creator() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let aborted_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(1), Value::String("Ghost".to_string())],
+                    RowMetadata {
+                        xmin: aborted_id,
+                        xmax: 0,
+                    },
+                )
+                .unwrap();
+        }
+
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users").unwrap())
+            .unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert!(rows.is_empty());
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_visibility_hides_committed_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let creator_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let deleter_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(2), Value::String("Gone".to_string())],
+                    RowMetadata {
+                        xmin: creator_id,
+                        xmax: deleter_id,
+                    },
+                )
+                .unwrap();
+        }
+
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users WHERE id = 2").unwrap())
+            .unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert!(rows.is_empty());
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_visibility_ignores_aborted_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let creator_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let deleter_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(3), Value::String("Alive".to_string())],
+                    RowMetadata {
+                        xmin: creator_id,
+                        xmax: deleter_id,
+                    },
+                )
+                .unwrap();
+        }
+
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users WHERE id = 3").unwrap())
+            .unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert_eq!(rows.len(), 1);
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_visibility_hides_current_txn_delete() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let creator_id = executor.current_txn_id().expect("txn id");
+        executor.execute(parse_sql("COMMIT").unwrap()).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        let txn_id = executor.current_txn_id().expect("txn id");
+
+        {
+            let table = executor.get_table("users").expect("table");
+            table
+                .insert_with_metadata(
+                    &[Value::Integer(4), Value::String("SelfDelete".to_string())],
+                    RowMetadata {
+                        xmin: creator_id,
+                        xmax: txn_id,
+                    },
+                )
+                .unwrap();
+        }
+
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users WHERE id = 4").unwrap())
+            .unwrap();
+        match result {
+            ExecutionResult::Select { rows, .. } => {
+                assert!(rows.is_empty());
+            }
+            other => panic!("Expected Select result, got: {:?}", other),
+        }
+
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+    }
+
+    #[test]
     fn test_commit_clears_transaction_state() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
