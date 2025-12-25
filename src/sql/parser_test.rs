@@ -1,5 +1,5 @@
 mod tests {
-    use crate::sql::ast::{BinaryOp, Expr, FromClause, IndexType, Literal, SelectColumn};
+    use crate::sql::ast::{BinaryOp, Expr, ForeignKeyRef, FromClause, IndexType, Literal, SelectColumn};
     use crate::sql::{parse_sql, parse_sql_statements};
     use crate::sql::parser::{Token, Tokenizer};
     use crate::sql::{DataType, Statement, TransactionCommand};
@@ -71,6 +71,26 @@ mod tests {
             Statement::CreateTable(create) => {
                 assert_eq!(create.table_name, "Users");
                 assert_eq!(create.columns.len(), 2);
+            }
+            _ => panic!("Expected CreateTable statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_create_table_constraints() {
+        let sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE, org_id INTEGER REFERENCES orgs(id))";
+        let stmt = parse_sql(sql).unwrap();
+
+        match stmt {
+            Statement::CreateTable(create) => {
+                assert_eq!(create.columns.len(), 3);
+                assert!(create.columns[0].is_primary_key);
+                assert!(create.columns[0].is_unique);
+                assert!(create.columns[1].is_unique);
+                assert_eq!(
+                    create.columns[2].references,
+                    Some(ForeignKeyRef::new("orgs", "id"))
+                );
             }
             _ => panic!("Expected CreateTable statement"),
         }

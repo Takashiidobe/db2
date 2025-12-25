@@ -25,6 +25,9 @@ impl std::fmt::Display for DataType {
 pub struct ColumnDef {
     pub name: String,
     pub data_type: DataType,
+    pub is_primary_key: bool,
+    pub is_unique: bool,
+    pub references: Option<ForeignKeyRef>,
 }
 
 impl ColumnDef {
@@ -32,6 +35,24 @@ impl ColumnDef {
         Self {
             name: name.into(),
             data_type,
+            is_primary_key: false,
+            is_unique: false,
+            references: None,
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ForeignKeyRef {
+    pub table: String,
+    pub column: String,
+}
+
+impl ForeignKeyRef {
+    pub fn new(table: impl Into<String>, column: impl Into<String>) -> Self {
+        Self {
+            table: table.into(),
+            column: column.into(),
         }
     }
 }

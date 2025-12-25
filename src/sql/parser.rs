@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
-    DropIndexStmt, DropTableStmt, Expr, FromClause, IndexType, InsertStmt, Literal, SelectColumn,
-    SelectStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
+    DropIndexStmt, DropTableStmt, Expr, ForeignKeyRef, FromClause, IndexType, InsertStmt, Literal,
+    SelectColumn, SelectStmt, Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 
 /// Parse errors
@@ -60,6 +60,10 @@ pub(crate) enum Token {
     Update,
     Set,
     Semicolon,
+    Primary,
+    Key,
+    Unique,
+    References,
 
     // Symbols
     LeftParen,
@@ -116,6 +120,10 @@ impl PartialEq for Token {
             | (Token::Update, Token::Update)
             | (Token::Set, Token::Set)
             | (Token::Semicolon, Token::Semicolon)
+            | (Token::Primary, Token::Primary)
+            | (Token::Key, Token::Key)
+            | (Token::Unique, Token::Unique)
+            | (Token::References, Token::References)
             | (Token::LeftParen, Token::LeftParen)
             | (Token::RightParen, Token::RightParen)
             | (Token::Comma, Token::Comma)
@@ -169,6 +177,10 @@ impl std::fmt::Display for Token {
             Token::Update => write!(f, "UPDATE"),
             Token::Set => write!(f, "SET"),
             Token::Semicolon => write!(f, ";"),
+            Token::Primary => write!(f, "PRIMARY"),
+            Token::Key => write!(f, "KEY"),
+            Token::Unique => write!(f, "UNIQUE"),
+            Token::References => write!(f, "REFERENCES"),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
             Token::LeftParen => write!(f, "("),
@@ -455,6 +467,10 @@ impl Tokenizer {
                     "SET" => Token::Set,
                     "TRUE" => Token::True,
                     "FALSE" => Token::False,
+                    "PRIMARY" => Token::Primary,
+                    "KEY" => Token::Key,
+                    "UNIQUE" => Token::Unique,
+                    "REFERENCES" => Token::References,
                     _ => Token::Identifier(ident),
                 };
                 Ok(token)
@@ -564,7 +580,56 @@ impl Parser {
 
         let data_type = self.parse_data_type()?;
 
-        Ok(ColumnDef::new(name, data_type))
+        let mut column = ColumnDef::new(name, data_type);
+        loop {
+            match self.current() {
+                Token::Primary => {
+                    self.advance();
+                    self.expect(Token::Key)?;
+                    column.is_primary_key = true;
+                    column.is_unique = true;
+                }
+                Token::Unique => {
+                    self.advance();
+                    column.is_unique = true;
+                }
+                Token::References => {
+                    self.advance();
+                    let table = match self.current() {
+                        Token::Identifier(s) => {
+                            let name = s.clone();
+                            self.advance();
+                            name
+                        }
+                        _ => {
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "referenced table name".to_string(),
+                                found: format!("{}", self.current()),
+                            });
+                        }
+                    };
+                    self.expect(Token::LeftParen)?;
+                    let column_name = match self.current() {
+                        Token::Identifier(s) => {
+                            let name = s.clone();
+                            self.advance();
+                            name
+                        }
+                        _ => {
+                            return Err(ParseError::UnexpectedToken {
+                                expected: "referenced column name".to_string(),
+                                found: format!("{}", self.current()),
+                            });
+                        }
+                    };
+                    self.expect(Token::RightParen)?;
+                    column.references = Some(ForeignKeyRef::new(table, column_name));
+                }
+                _ => break,
+            }
+        }
+
+        Ok(column)
     }
 
     fn parse_create_table(&mut self) -> Result<CreateTableStmt, ParseError> {

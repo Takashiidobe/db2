@@ -313,6 +313,8 @@ pub struct Executor {
     snapshots: HashMap<TxnId, Snapshot>,
     /// Transaction state table (active/committed/aborted).
     txn_states: HashMap<TxnId, TxnState>,
+    /// Table constraints (primary/unique/foreign keys).
+    constraints: HashMap<String, TableConstraints>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -327,6 +329,20 @@ pub enum TxnState {
     Active,
     Committed,
     Aborted,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct TableConstraints {
+    primary_key: Option<String>,
+    unique: HashSet<String>,
+    foreign_keys: Vec<ForeignKey>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ForeignKey {
+    column: String,
+    ref_table: String,
+    ref_column: String,
 }
 
 impl Executor {
@@ -368,10 +384,12 @@ impl Executor {
             active_txns: HashSet::new(),
             snapshots: HashMap::new(),
             txn_states: HashMap::new(),
+            constraints: HashMap::new(),
         };
 
         executor.recover_from_wal()?;
         executor.load_indexes_from_metadata()?;
+        executor.load_constraints_metadata()?;
 
         Ok(executor)
     }
@@ -428,6 +446,72 @@ impl Executor {
 
         let schema = Schema::new(columns);
 
+        let mut primary_key: Option<String> = None;
+        let mut unique: HashSet<String> = HashSet::new();
+        let mut foreign_keys = Vec::new();
+
+        for col_def in &stmt.columns {
+            if col_def.is_primary_key {
+                if primary_key.is_some() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Only one PRIMARY KEY is supported",
+                    ));
+                }
+                primary_key = Some(col_def.name.clone());
+                unique.insert(col_def.name.clone());
+            } else if col_def.is_unique {
+                unique.insert(col_def.name.clone());
+            }
+
+            if let Some(ref fk) = col_def.references {
+                let referenced = self.tables.get(&fk.table).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Referenced table '{}' does not exist", fk.table),
+                    )
+                })?;
+                let (_, ref_col) = referenced
+                    .schema()
+                    .find_column(&fk.column)
+                    .ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "Referenced column '{}.{}' does not exist",
+                                fk.table, fk.column
+                            ),
+                        )
+                    })?;
+
+                let (_, column) = schema.find_column(&col_def.name).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Column '{}' not found in schema", col_def.name),
+                    )
+                })?;
+                if column.data_type() != ref_col.data_type() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Foreign key type mismatch: {} ({}) references {}.{} ({})",
+                            col_def.name,
+                            column.data_type(),
+                            fk.table,
+                            fk.column,
+                            ref_col.data_type()
+                        ),
+                    ));
+                }
+
+                foreign_keys.push(ForeignKey {
+                    column: col_def.name.clone(),
+                    ref_table: fk.table.clone(),
+                    ref_column: fk.column.clone(),
+                });
+            }
+        }
+
         // Create table file path
         let table_path = self.db_path.join(format!("{}.db", stmt.table_name));
 
@@ -436,6 +520,15 @@ impl Executor {
 
         let table_name = stmt.table_name.clone();
         self.tables.insert(stmt.table_name, table);
+        self.constraints.insert(
+            table_name.clone(),
+            TableConstraints {
+                primary_key,
+                unique,
+                foreign_keys,
+            },
+        );
+        self.persist_constraints_metadata()?;
 
         Ok(ExecutionResult::CreateTable { table_name })
     }
@@ -455,9 +548,11 @@ impl Executor {
 
         // Remove any indexes that reference this table
         self.indexes.retain(|idx| idx.key.table != stmt.table_name);
+        self.constraints.remove(&stmt.table_name);
 
         // Persist updated index metadata
         self.persist_index_metadata()?;
+        self.persist_constraints_metadata()?;
 
         // Delete the table file from disk
         let table_path = self.db_path.join(format!("{}.db", stmt.table_name));
@@ -582,6 +677,10 @@ impl Executor {
                 io::ErrorKind::Other,
                 format!("Write conflict detected on row {:?}", row_id),
             ));
+        }
+
+        for (_row_id, row) in &rows_to_delete {
+            self.enforce_no_fk_references(&table_name, row)?;
         }
 
         // Apply deletions
@@ -798,6 +897,16 @@ impl Executor {
             ));
         }
 
+        let updated_rows: Vec<Vec<Value>> = pending_updates
+            .iter()
+            .map(|(_, _, new_row)| new_row.clone())
+            .collect();
+        self.validate_batch_uniques(&table_name, &updated_rows)?;
+        for (row_id, before_row, new_row) in &pending_updates {
+            self.enforce_constraints_for_row(&table_name, new_row, Some(*row_id))?;
+            self.enforce_no_fk_references_on_update(&table_name, before_row, new_row)?;
+        }
+
         let wal_context = if pending_updates.is_empty() {
             None
         } else {
@@ -938,8 +1047,43 @@ impl Executor {
     /// Execute INSERT statement
     fn execute_insert(&mut self, stmt: InsertStmt) -> io::Result<ExecutionResult> {
         let mut row_ids = Vec::new();
+        let table_name = stmt.table_name;
 
-        let has_values = !stmt.values.is_empty();
+        let schema = {
+            let table = self.tables.get(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+
+        let mut prepared_rows = Vec::new();
+        for row_values in stmt.values {
+            if row_values.len() != schema.column_count() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    "Row does not match table schema",
+                ));
+            }
+
+            let values: Vec<Value> = row_values
+                .iter()
+                .zip(schema.columns())
+                .map(|(lit, col)| Self::literal_to_typed_value(lit, col.data_type()))
+                .collect::<io::Result<_>>()?;
+            prepared_rows.push(values);
+        }
+
+        if !prepared_rows.is_empty() {
+            self.validate_batch_uniques(&table_name, &prepared_rows)?;
+            for row in &prepared_rows {
+                self.enforce_constraints_for_row(&table_name, row, None)?;
+            }
+        }
+
+        let has_values = !prepared_rows.is_empty();
         let wal_context = if has_values {
             Some(self.wal_txn_for_mutation()?)
         } else {
@@ -949,34 +1093,20 @@ impl Executor {
         let mut wal_records = Vec::new();
 
         {
-            // Get the table
-            let table = self.tables.get_mut(&stmt.table_name).ok_or_else(|| {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Table '{}' does not exist", stmt.table_name),
+                    format!("Table '{}' does not exist", table_name),
                 )
             })?;
 
-            for row_values in stmt.values {
-                if row_values.len() != table.schema().column_count() {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidInput,
-                        "Row does not match table schema",
-                    ));
-                }
-
-                let values: Vec<Value> = row_values
-                    .iter()
-                    .zip(table.schema().columns())
-                    .map(|(lit, col)| Self::literal_to_typed_value(lit, col.data_type()))
-                    .collect::<io::Result<_>>()?;
-
+            for values in prepared_rows {
                 let row_id = table.insert(&values)?;
 
                 for index in self
                     .indexes
                     .iter_mut()
-                    .filter(|idx| idx.key.table == stmt.table_name)
+                    .filter(|idx| idx.key.table == table_name)
                 {
                     let key = Self::build_composite_key(
                         &values,
@@ -989,7 +1119,7 @@ impl Executor {
                 if let Some((txn_id, _)) = wal_context {
                     wal_records.push(WalRecord::Insert {
                         txn_id,
-                        table: stmt.table_name.clone(),
+                        table: table_name.clone(),
                         row_id,
                         values,
                     });
@@ -2196,6 +2326,28 @@ impl Executor {
         fs::write(path, buf)
     }
 
+    fn persist_constraints_metadata(&self) -> io::Result<()> {
+        let path = self.db_path.join("constraints.meta");
+        let mut buf = String::new();
+        for (table, constraints) in &self.constraints {
+            let primary = constraints.primary_key.clone().unwrap_or_default();
+            let mut unique: Vec<String> = constraints.unique.iter().cloned().collect();
+            unique.sort();
+            let unique_str = unique.join(",");
+            let fk_str = constraints
+                .foreign_keys
+                .iter()
+                .map(|fk| format!("{}->{}.{}", fk.column, fk.ref_table, fk.ref_column))
+                .collect::<Vec<_>>()
+                .join(";");
+            buf.push_str(&format!(
+                "{}|{}|{}|{}\n",
+                table, primary, unique_str, fk_str
+            ));
+        }
+        fs::write(path, buf)
+    }
+
     fn load_indexes_from_metadata(&mut self) -> io::Result<()> {
         let path = self.db_path.join("indexes.meta");
         if !path.exists() {
@@ -2279,6 +2431,79 @@ impl Executor {
                 index_type,
                 data,
             });
+        }
+
+        Ok(())
+    }
+
+    fn load_constraints_metadata(&mut self) -> io::Result<()> {
+        let path = self.db_path.join("constraints.meta");
+        if !path.exists() {
+            return Ok(());
+        }
+
+        let data = fs::read_to_string(&path)?;
+        for line in data.lines() {
+            let parts: Vec<&str> = line.split('|').collect();
+            if parts.is_empty() {
+                continue;
+            }
+            let table = parts[0].to_string();
+            if !self.tables.contains_key(&table) {
+                continue;
+            }
+
+            let primary = parts.get(1).and_then(|s| {
+                if s.is_empty() {
+                    None
+                } else {
+                    Some((*s).to_string())
+                }
+            });
+            let mut unique = HashSet::new();
+            if let Some(unique_str) = parts.get(2) {
+                if !unique_str.is_empty() {
+                    for col in unique_str.split(',') {
+                        if !col.is_empty() {
+                            unique.insert(col.to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(ref pk) = primary {
+                unique.insert(pk.clone());
+            }
+
+            let mut foreign_keys = Vec::new();
+            if let Some(fk_str) = parts.get(3) {
+                if !fk_str.is_empty() {
+                    for entry in fk_str.split(';') {
+                        let mut split = entry.split("->");
+                        let Some(column) = split.next() else { continue };
+                        let Some(target) = split.next() else { continue };
+                        let mut target_split = target.split('.');
+                        let Some(ref_table) = target_split.next() else { continue };
+                        let Some(ref_column) = target_split.next() else { continue };
+                        if column.is_empty() || ref_table.is_empty() || ref_column.is_empty() {
+                            continue;
+                        }
+                        foreign_keys.push(ForeignKey {
+                            column: column.to_string(),
+                            ref_table: ref_table.to_string(),
+                            ref_column: ref_column.to_string(),
+                        });
+                    }
+                }
+            }
+
+            self.constraints.insert(
+                table,
+                TableConstraints {
+                    primary_key: primary,
+                    unique,
+                    foreign_keys,
+                },
+            );
         }
 
         Ok(())
@@ -2392,6 +2617,333 @@ impl Executor {
                 TxnState::Active | TxnState::Aborted => true,
             },
         }
+    }
+
+    fn validate_batch_uniques(
+        &self,
+        table_name: &str,
+        rows: &[Vec<Value>],
+    ) -> io::Result<()> {
+        if rows.len() < 2 {
+            return Ok(());
+        }
+        let Some(constraints) = self.constraints.get(table_name) else {
+            return Ok(());
+        };
+        if constraints.unique.is_empty() {
+            return Ok(());
+        }
+        let schema = self
+            .tables
+            .get(table_name)
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?
+            .schema()
+            .clone();
+
+        for col in &constraints.unique {
+            let (idx, _) = schema.find_column(col).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", col, table_name),
+                )
+            })?;
+            for i in 0..rows.len() {
+                for j in (i + 1)..rows.len() {
+                    if rows[i][idx] == rows[j][idx] {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!("Unique constraint violated on {}", col),
+                        ));
+                    }
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn enforce_constraints_for_row(
+        &mut self,
+        table_name: &str,
+        row: &[Value],
+        exclude_row: Option<RowId>,
+    ) -> io::Result<()> {
+        let Some(constraints) = self.constraints.get(table_name).cloned() else {
+            return Ok(());
+        };
+        if constraints.unique.is_empty() && constraints.foreign_keys.is_empty() {
+            return Ok(());
+        }
+
+        let schema = {
+            let table = self.tables.get(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+
+        let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
+
+        for col in constraints.unique {
+            let (idx, _) = schema.find_column(&col).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", col, table_name),
+                )
+            })?;
+            let value = &row[idx];
+            let table = self.tables.get_mut(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            let mut scan = TableScan::new(table);
+            while let Some((row_id, meta, existing)) = scan.next_with_metadata()? {
+                if Some(row_id) == exclude_row {
+                    continue;
+                }
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
+                    continue;
+                }
+                if existing[idx] == *value {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!("Unique constraint violated on {}", col),
+                    ));
+                }
+            }
+        }
+
+        for fk in constraints.foreign_keys {
+            let (idx, _) = schema.find_column(&fk.column).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", fk.column, table_name),
+                )
+            })?;
+            let value = &row[idx];
+            let ref_schema = {
+                let table = self.tables.get(&fk.ref_table).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Referenced table '{}' does not exist", fk.ref_table),
+                    )
+                })?;
+                table.schema().clone()
+            };
+            let (ref_idx, _) = ref_schema.find_column(&fk.ref_column).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Referenced column '{}.{}' does not exist",
+                        fk.ref_table, fk.ref_column
+                    ),
+                )
+            })?;
+            let table = self.tables.get_mut(&fk.ref_table).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Referenced table '{}' does not exist", fk.ref_table),
+                )
+            })?;
+            let mut scan = TableScan::new(table);
+            let mut found = false;
+            while let Some((_row_id, meta, existing)) = scan.next_with_metadata()? {
+                if !Self::is_visible_for_snapshot(
+                    &meta,
+                    snapshot.as_ref(),
+                    current_txn_id,
+                    &txn_states,
+                ) {
+                    continue;
+                }
+                if existing[ref_idx] == *value {
+                    found = true;
+                    break;
+                }
+            }
+            if !found {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Foreign key violation on {}.{} -> {}.{}",
+                        table_name, fk.column, fk.ref_table, fk.ref_column
+                    ),
+                ));
+            }
+        }
+
+        Ok(())
+    }
+
+    fn has_referencing_rows(
+        &mut self,
+        ref_table: &str,
+        ref_column: &str,
+        value: &Value,
+    ) -> io::Result<bool> {
+        let constraints = self.constraints.clone();
+        if constraints.is_empty() {
+            return Ok(false);
+        }
+
+        let snapshot = self.current_snapshot();
+        let current_txn_id = self.current_txn_id;
+        let txn_states = self.txn_states.clone();
+
+        for (child_table, table_constraints) in constraints {
+            for fk in table_constraints.foreign_keys {
+                if fk.ref_table != ref_table || fk.ref_column != ref_column {
+                    continue;
+                }
+                let child_schema = {
+                    let table = self.tables.get(&child_table).ok_or_else(|| {
+                        io::Error::new(
+                            io::ErrorKind::NotFound,
+                            format!("Table '{}' does not exist", child_table),
+                        )
+                    })?;
+                    table.schema().clone()
+                };
+                let (child_idx, _) = child_schema.find_column(&fk.column).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Foreign key column '{}' not found in table '{}'",
+                            fk.column, child_table
+                        ),
+                    )
+                })?;
+                let table = self.tables.get_mut(&child_table).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::NotFound,
+                        format!("Table '{}' does not exist", child_table),
+                    )
+                })?;
+                let mut scan = TableScan::new(table);
+                while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
+                    if !Self::is_visible_for_snapshot(
+                        &meta,
+                        snapshot.as_ref(),
+                        current_txn_id,
+                        &txn_states,
+                    ) {
+                        continue;
+                    }
+                    if row[child_idx] == *value {
+                        return Ok(true);
+                    }
+                }
+            }
+        }
+
+        Ok(false)
+    }
+
+    fn enforce_no_fk_references(&mut self, table_name: &str, row: &[Value]) -> io::Result<()> {
+        let schema = {
+            let table = self.tables.get(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+
+        let constraints = self.constraints.clone();
+        for (_child_table, table_constraints) in &constraints {
+            for fk in &table_constraints.foreign_keys {
+                if fk.ref_table != table_name {
+                    continue;
+                }
+                let (ref_idx, _) = schema.find_column(&fk.ref_column).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Referenced column '{}.{}' does not exist",
+                            fk.ref_table, fk.ref_column
+                        ),
+                    )
+                })?;
+                let value = &row[ref_idx];
+                if self.has_referencing_rows(table_name, &fk.ref_column, value)? {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Foreign key restrict violation on {}.{}",
+                            fk.ref_table, fk.ref_column
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn enforce_no_fk_references_on_update(
+        &mut self,
+        table_name: &str,
+        before: &[Value],
+        after: &[Value],
+    ) -> io::Result<()> {
+        let schema = {
+            let table = self.tables.get(table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+
+        let constraints = self.constraints.clone();
+        for (_child_table, table_constraints) in &constraints {
+            for fk in &table_constraints.foreign_keys {
+                if fk.ref_table != table_name {
+                    continue;
+                }
+                let (ref_idx, _) = schema.find_column(&fk.ref_column).ok_or_else(|| {
+                    io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Referenced column '{}.{}' does not exist",
+                            fk.ref_table, fk.ref_column
+                        ),
+                    )
+                })?;
+                if before[ref_idx] != after[ref_idx]
+                    && self.has_referencing_rows(table_name, &fk.ref_column, &before[ref_idx])?
+                {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Foreign key restrict violation on {}.{}",
+                            fk.ref_table, fk.ref_column
+                        ),
+                    ));
+                }
+            }
+        }
+
+        Ok(())
     }
 
     fn has_write_conflict(
