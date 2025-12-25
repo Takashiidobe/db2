@@ -951,6 +951,14 @@ mod tests {
     }
 
     #[test]
+    fn test_executor_starts_outside_transaction() {
+        let temp_dir = TempDir::new().unwrap();
+        let executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        assert!(!executor.in_transaction());
+    }
+
+    #[test]
     fn test_execute_transaction_statements() {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
@@ -972,5 +980,17 @@ mod tests {
             }
             _ => panic!("Expected Transaction result"),
         }
+    }
+
+    #[test]
+    fn test_begin_sets_transaction_state_and_rejects_nested() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        assert!(executor.in_transaction());
+
+        let err = executor.execute(parse_sql("BEGIN").unwrap()).unwrap_err();
+        assert!(err.to_string().contains("already in progress"));
     }
 }

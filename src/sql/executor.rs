@@ -295,6 +295,8 @@ pub struct Executor {
     tables: HashMap<String, HeapTable>,
     /// Index catalog (in-memory B-Tree or hash indexes over integer columns)
     indexes: Vec<IndexEntry>,
+    /// Transaction state (syntax-only for now).
+    in_transaction: bool,
 }
 
 impl Executor {
@@ -327,6 +329,7 @@ impl Executor {
             buffer_pool_size,
             tables,
             indexes: Vec::new(),
+            in_transaction: false,
         };
 
         executor.load_indexes_from_metadata()?;
@@ -647,6 +650,19 @@ impl Executor {
     }
 
     fn execute_transaction(&mut self, stmt: TransactionStmt) -> io::Result<ExecutionResult> {
+        match stmt.command {
+            TransactionCommand::Begin => {
+                if self.in_transaction {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Transaction already in progress",
+                    ));
+                }
+                self.in_transaction = true;
+            }
+            TransactionCommand::Commit | TransactionCommand::Rollback => {}
+        }
+
         Ok(ExecutionResult::Transaction {
             command: stmt.command,
         })
@@ -1965,6 +1981,11 @@ impl Executor {
             .iter()
             .map(|(name, table)| (name.clone(), table.schema().clone()))
             .collect()
+    }
+
+    /// Report whether a transaction is active.
+    pub fn in_transaction(&self) -> bool {
+        self.in_transaction
     }
 
     /// Return index metadata currently loaded.
