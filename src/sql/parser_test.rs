@@ -78,12 +78,12 @@ mod tests {
 
     #[test]
     fn test_parse_create_table_constraints() {
-        let sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE, org_id INTEGER REFERENCES orgs(id))";
+        let sql = "CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE, org_id INTEGER REFERENCES orgs(id), age INTEGER NOT NULL CHECK (age > 0))";
         let stmt = parse_sql(sql).unwrap();
 
         match stmt {
             Statement::CreateTable(create) => {
-                assert_eq!(create.columns.len(), 3);
+                assert_eq!(create.columns.len(), 4);
                 assert!(create.columns[0].is_primary_key);
                 assert!(create.columns[0].is_unique);
                 assert!(create.columns[1].is_unique);
@@ -91,6 +91,8 @@ mod tests {
                     create.columns[2].references,
                     Some(ForeignKeyRef::new("orgs", "id"))
                 );
+                assert!(create.columns[3].is_not_null);
+                assert!(create.columns[3].check.is_some());
             }
             _ => panic!("Expected CreateTable statement"),
         }

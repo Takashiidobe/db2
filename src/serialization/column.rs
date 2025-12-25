@@ -11,6 +11,7 @@ enum TypeTag {
     Boolean = 2,
     Unsigned = 3,
     Float = 4,
+    Null = 5,
 }
 
 impl TypeTag {
@@ -21,6 +22,7 @@ impl TypeTag {
             2 => Ok(TypeTag::Boolean),
             3 => Ok(TypeTag::Unsigned),
             4 => Ok(TypeTag::Float),
+            5 => Ok(TypeTag::Null),
             _ => Err(SerializationError::InvalidTypeTag(value)),
         }
     }
@@ -32,6 +34,7 @@ impl TypeTag {
             Value::String(_) => TypeTag::String,
             Value::Unsigned(_) => TypeTag::Unsigned,
             Value::Float(_) => TypeTag::Float,
+            Value::Null => TypeTag::Null,
         }
     }
 }
@@ -96,12 +99,23 @@ impl ColumnSerializer {
         // Write value count
         codec::write_u32(&mut buf, values.len() as u32)?;
 
-        // Determine and write type tag
-        let type_tag = TypeTag::from_value(&values[0]);
+        // Determine and write type tag (skip NULLs when deciding)
+        let mut type_tag = None;
+        for value in values {
+            if !matches!(value, Value::Null) {
+                type_tag = Some(TypeTag::from_value(value));
+                break;
+            }
+        }
+        let type_tag = type_tag.unwrap_or(TypeTag::Null);
         codec::write_u8(&mut buf, type_tag as u8)?;
 
         // Verify all values have the same type and serialize them
         for value in values {
+            if matches!(value, Value::Null) {
+                codec::write_u8(&mut buf, 1)?;
+                continue;
+            }
             let value_type = TypeTag::from_value(value);
             if value_type != type_tag {
                 return Err(SerializationError::TypeMismatch {
@@ -111,11 +125,27 @@ impl ColumnSerializer {
             }
 
             match value {
-                Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
-                Value::Unsigned(u) => codec::write_u64(&mut buf, *u)?,
-                Value::Float(fv) => codec::write_f64(&mut buf, *fv)?,
-                Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
-                Value::String(s) => codec::write_string(&mut buf, s)?,
+                Value::Integer(i) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i64(&mut buf, *i)?;
+                }
+                Value::Unsigned(u) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_u64(&mut buf, *u)?;
+                }
+                Value::Float(fv) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_f64(&mut buf, *fv)?;
+                }
+                Value::Boolean(b) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_u8(&mut buf, *b as u8)?;
+                }
+                Value::String(s) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_string(&mut buf, s)?;
+                }
+                Value::Null => unreachable!("nulls handled above"),
             }
         }
 
@@ -140,6 +170,11 @@ impl ColumnSerializer {
         // Deserialize values based on type
         let mut values = Vec::with_capacity(value_count);
         for _ in 0..value_count {
+            let is_null = codec::read_u8(&mut cursor)? != 0;
+            if is_null {
+                values.push(Value::Null);
+                continue;
+            }
             let value = match type_tag {
                 TypeTag::Integer => {
                     let i = codec::read_i64(&mut cursor)?;
@@ -160,6 +195,12 @@ impl ColumnSerializer {
                 TypeTag::Boolean => {
                     let b = codec::read_u8(&mut cursor)?;
                     Value::Boolean(b != 0)
+                }
+                TypeTag::Null => {
+                    return Err(SerializationError::TypeMismatch {
+                        expected: "NULL".to_string(),
+                        found: "non-null".to_string(),
+                    });
                 }
             };
             values.push(value);

@@ -14,6 +14,7 @@ impl DataType {
     /// Check if a value matches this data type
     pub fn matches(&self, value: &Value) -> bool {
         match (self, value) {
+            (_, Value::Null) => true,
             (DataType::Integer, Value::Integer(_)) => true,
             (DataType::Integer, Value::Unsigned(u)) => *u <= i64::MAX as u64,
             (DataType::Unsigned, Value::Unsigned(_)) => true,

@@ -64,3 +64,27 @@ fn test_foreign_key_constraints() {
         _ => panic!("Expected Select result"),
     }
 }
+
+#[test]
+fn test_not_null_and_check_constraints() {
+    let temp_dir = TempDir::new().unwrap();
+    let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+    executor
+        .execute(parse_sql("CREATE TABLE products (id INTEGER PRIMARY KEY, price INTEGER NOT NULL CHECK (price > 0))").unwrap())
+        .unwrap();
+
+    let err = executor
+        .execute(parse_sql("INSERT INTO products VALUES (1, NULL)").unwrap())
+        .unwrap_err();
+    assert!(err.to_string().contains("NOT NULL"));
+
+    let err = executor
+        .execute(parse_sql("INSERT INTO products VALUES (2, -5)").unwrap())
+        .unwrap_err();
+    assert!(err.to_string().contains("CHECK"));
+
+    executor
+        .execute(parse_sql("INSERT INTO products VALUES (3, 10)").unwrap())
+        .unwrap();
+}

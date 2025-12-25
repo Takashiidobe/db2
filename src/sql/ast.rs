@@ -27,6 +27,8 @@ pub struct ColumnDef {
     pub data_type: DataType,
     pub is_primary_key: bool,
     pub is_unique: bool,
+    pub is_not_null: bool,
+    pub check: Option<Expr>,
     pub references: Option<ForeignKeyRef>,
 }
 
@@ -37,6 +39,8 @@ impl ColumnDef {
             data_type,
             is_primary_key: false,
             is_unique: false,
+            is_not_null: false,
+            check: None,
             references: None,
         }
     }
@@ -80,6 +84,7 @@ pub enum Literal {
     Float(f64),
     Boolean(bool),
     String(String),
+    Null,
 }
 
 impl PartialEq for Literal {
@@ -103,6 +108,7 @@ impl std::fmt::Display for Literal {
             Literal::Float(fl) => write!(f, "{}", fl),
             Literal::Boolean(b) => write!(f, "{}", b),
             Literal::String(s) => write!(f, "'{}'", s),
+            Literal::Null => write!(f, "NULL"),
         }
     }
 }

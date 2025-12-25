@@ -3,6 +3,7 @@ use super::ast::{
     DropTableStmt, Expr, IndexType, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
     TransactionCommand, TransactionStmt, UpdateStmt,
 };
+use super::parser::parse_sql;
 use crate::index::{BPlusTree, HashIndex};
 use crate::optimizer::planner::{
     FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
@@ -236,12 +237,14 @@ impl IndexValue {
         match value {
             Value::Integer(i) => Some(IndexValue::Signed(*i)),
             Value::Unsigned(u) => Some(IndexValue::Unsigned(*u)),
+            Value::Null => None,
             _ => None,
         }
     }
 
     fn from_literal(lit: &Literal, data_type: &DbDataType) -> Option<Self> {
         match (lit, data_type) {
+            (Literal::Null, _) => None,
             (Literal::Integer(i), DbDataType::Integer) => {
                 (*i).try_into().ok().map(IndexValue::Signed)
             }
@@ -335,7 +338,9 @@ pub enum TxnState {
 struct TableConstraints {
     primary_key: Option<String>,
     unique: HashSet<String>,
+    not_null: HashSet<String>,
     foreign_keys: Vec<ForeignKey>,
+    checks: Vec<Expr>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -448,7 +453,9 @@ impl Executor {
 
         let mut primary_key: Option<String> = None;
         let mut unique: HashSet<String> = HashSet::new();
+        let mut not_null = HashSet::new();
         let mut foreign_keys = Vec::new();
+        let mut checks = Vec::new();
 
         for col_def in &stmt.columns {
             if col_def.is_primary_key {
@@ -460,8 +467,16 @@ impl Executor {
                 }
                 primary_key = Some(col_def.name.clone());
                 unique.insert(col_def.name.clone());
+                not_null.insert(col_def.name.clone());
             } else if col_def.is_unique {
                 unique.insert(col_def.name.clone());
+            }
+            if col_def.is_not_null {
+                not_null.insert(col_def.name.clone());
+            }
+
+            if let Some(ref expr) = col_def.check {
+                checks.push(expr.clone());
             }
 
             if let Some(ref fk) = col_def.references {
@@ -525,7 +540,9 @@ impl Executor {
             TableConstraints {
                 primary_key,
                 unique,
+                not_null,
                 foreign_keys,
+                checks,
             },
         );
         self.persist_constraints_metadata()?;
@@ -1874,6 +1891,7 @@ impl Executor {
             Literal::Float(fv) => Ok(Value::Float(*fv)),
             Literal::Boolean(b) => Ok(Value::Boolean(*b)),
             Literal::String(s) => Ok(Value::String(s.clone())),
+            Literal::Null => Ok(Value::Null),
         }
     }
 
@@ -1884,6 +1902,7 @@ impl Executor {
 
     fn coerce_value_to_type(value: Value, data_type: DbDataType) -> io::Result<Value> {
         match (data_type, value) {
+            (_, Value::Null) => Ok(Value::Null),
             (DbDataType::Integer, Value::Integer(i)) => Ok(Value::Integer(i)),
             (DbDataType::Integer, Value::Unsigned(u)) if u <= i64::MAX as u64 => {
                 Ok(Value::Integer(u as i64))
@@ -1928,6 +1947,10 @@ impl Executor {
 
                 let left_val = Self::evaluate_expr_static(left, row, columns)?;
                 let right_val = Self::evaluate_expr_static(right, row, columns)?;
+
+                if left_val.is_null() || right_val.is_null() {
+                    return Ok(false);
+                }
 
                 let result = match op {
                     BinaryOp::Eq => left_val == right_val,
@@ -2334,15 +2357,24 @@ impl Executor {
             let mut unique: Vec<String> = constraints.unique.iter().cloned().collect();
             unique.sort();
             let unique_str = unique.join(",");
+            let mut not_null: Vec<String> = constraints.not_null.iter().cloned().collect();
+            not_null.sort();
+            let not_null_str = not_null.join(",");
             let fk_str = constraints
                 .foreign_keys
                 .iter()
                 .map(|fk| format!("{}->{}.{}", fk.column, fk.ref_table, fk.ref_column))
                 .collect::<Vec<_>>()
                 .join(";");
+            let check_str = constraints
+                .checks
+                .iter()
+                .map(Self::describe_expr)
+                .collect::<Vec<_>>()
+                .join(";");
             buf.push_str(&format!(
-                "{}|{}|{}|{}\n",
-                table, primary, unique_str, fk_str
+                "{}|{}|{}|{}|{}|{}\n",
+                table, primary, unique_str, fk_str, not_null_str, check_str
             ));
         }
         fs::write(path, buf)
@@ -2496,17 +2528,67 @@ impl Executor {
                 }
             }
 
+            let mut not_null = HashSet::new();
+            if let Some(not_null_str) = parts.get(4) {
+                if !not_null_str.is_empty() {
+                    for col in not_null_str.split(',') {
+                        if !col.is_empty() {
+                            not_null.insert(col.to_string());
+                        }
+                    }
+                }
+            }
+            if let Some(ref pk) = primary {
+                not_null.insert(pk.clone());
+            }
+
+            let mut checks = Vec::new();
+            if let Some(check_str) = parts.get(5) {
+                if !check_str.is_empty() {
+                    for expr_str in check_str.split(';') {
+                        if expr_str.trim().is_empty() {
+                            continue;
+                        }
+                        let expr = self.parse_check_expr(expr_str)?;
+                        checks.push(expr);
+                    }
+                }
+            }
+
             self.constraints.insert(
                 table,
                 TableConstraints {
                     primary_key: primary,
                     unique,
+                    not_null,
                     foreign_keys,
+                    checks,
                 },
             );
         }
 
         Ok(())
+    }
+
+    fn parse_check_expr(&self, expr_str: &str) -> io::Result<Expr> {
+        let stmt = parse_sql(&format!("SELECT * FROM t WHERE {}", expr_str)).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Failed to parse CHECK expression '{}': {}", expr_str, e),
+            )
+        })?;
+        match stmt {
+            Statement::Select(select) => select.where_clause.ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("Missing CHECK expression '{}'", expr_str),
+                )
+            }),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                format!("Invalid CHECK expression '{}'", expr_str),
+            )),
+        }
     }
 
     fn describe_scan(table: &str, scan_plan: &ScanPlan) -> String {
@@ -2654,6 +2736,9 @@ impl Executor {
             })?;
             for i in 0..rows.len() {
                 for j in (i + 1)..rows.len() {
+                    if rows[i][idx].is_null() || rows[j][idx].is_null() {
+                        continue;
+                    }
                     if rows[i][idx] == rows[j][idx] {
                         return Err(io::Error::new(
                             io::ErrorKind::InvalidInput,
@@ -2676,7 +2761,11 @@ impl Executor {
         let Some(constraints) = self.constraints.get(table_name).cloned() else {
             return Ok(());
         };
-        if constraints.unique.is_empty() && constraints.foreign_keys.is_empty() {
+        if constraints.unique.is_empty()
+            && constraints.foreign_keys.is_empty()
+            && constraints.not_null.is_empty()
+            && constraints.checks.is_empty()
+        {
             return Ok(());
         }
 
@@ -2690,6 +2779,21 @@ impl Executor {
             table.schema().clone()
         };
 
+        for col in &constraints.not_null {
+            let (idx, _) = schema.find_column(col).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", col, table_name),
+                )
+            })?;
+            if row[idx].is_null() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("NOT NULL constraint violated on {}", col),
+                ));
+            }
+        }
+
         let snapshot = self.current_snapshot();
         let current_txn_id = self.current_txn_id;
         let txn_states = self.txn_states.clone();
@@ -2702,6 +2806,9 @@ impl Executor {
                 )
             })?;
             let value = &row[idx];
+            if value.is_null() {
+                continue;
+            }
             let table = self.tables.get_mut(table_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
@@ -2738,6 +2845,9 @@ impl Executor {
                 )
             })?;
             let value = &row[idx];
+            if value.is_null() {
+                continue;
+            }
             let ref_schema = {
                 let table = self.tables.get(&fk.ref_table).ok_or_else(|| {
                     io::Error::new(
@@ -2786,6 +2896,19 @@ impl Executor {
                         table_name, fk.column, fk.ref_table, fk.ref_column
                     ),
                 ));
+            }
+        }
+
+        if !constraints.checks.is_empty() {
+            let columns_meta = Self::build_column_metadata_for_table(table_name, &schema);
+            for expr in constraints.checks {
+                let ok = Self::evaluate_predicate_static(&expr, row, &columns_meta)?;
+                if !ok {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "CHECK constraint violated",
+                    ));
+                }
             }
         }
 

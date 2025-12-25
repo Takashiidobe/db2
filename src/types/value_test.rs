@@ -60,6 +60,7 @@ mod tests {
         assert_eq!(format!("{}", Value::Float(1.5)), "1.5");
         assert_eq!(format!("{}", Value::Boolean(false)), "false");
         assert_eq!(format!("{}", Value::String("hello".to_string())), "hello");
+        assert_eq!(format!("{}", Value::Null), "NULL");
     }
 
     #[test]

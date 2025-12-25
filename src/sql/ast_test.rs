@@ -42,6 +42,7 @@ mod tests {
             format!("{}", Literal::String("hello".to_string())),
             "'hello'"
         );
+        assert_eq!(format!("{}", Literal::Null), "NULL");
     }
 
     #[test]

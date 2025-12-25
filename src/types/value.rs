@@ -10,6 +10,7 @@ pub enum Value {
     Float(f64),
     Boolean(bool),
     String(String),
+    Null,
 }
 
 impl Value {
@@ -36,6 +37,10 @@ impl Value {
     /// Returns true if this value is a String
     pub fn is_string(&self) -> bool {
         matches!(self, Value::String(_))
+    }
+
+    pub fn is_null(&self) -> bool {
+        matches!(self, Value::Null)
     }
 
     /// Returns the Integer value if this is an Integer, None otherwise
@@ -83,6 +88,7 @@ impl Value {
             Value::Integer(_) | Value::Unsigned(_) | Value::Float(_) => ValueKind::Numeric,
             Value::Boolean(_) => ValueKind::Boolean,
             Value::String(_) => ValueKind::String,
+            Value::Null => ValueKind::Null,
         }
     }
 }
@@ -95,6 +101,7 @@ impl fmt::Display for Value {
             Value::Float(fl) => write!(f, "{}", fl),
             Value::Boolean(b) => write!(f, "{}", b),
             Value::String(s) => write!(f, "{}", s),
+            Value::Null => write!(f, "NULL"),
         }
     }
 }
@@ -116,6 +123,7 @@ impl PartialEq for Value {
             }
             (Value::Boolean(a), Value::Boolean(b)) => a == b,
             (Value::String(a), Value::String(b)) => a == b,
+            (Value::Null, Value::Null) => true,
             _ => false,
         }
     }
@@ -132,6 +140,9 @@ impl PartialOrd for Value {
 impl Ord for Value {
     fn cmp(&self, other: &Self) -> Ordering {
         match (self, other) {
+            (Value::Null, Value::Null) => Ordering::Equal,
+            (Value::Null, _) => Ordering::Less,
+            (_, Value::Null) => Ordering::Greater,
             (Value::Integer(a), Value::Integer(b)) => a.cmp(b),
             (Value::Unsigned(a), Value::Unsigned(b)) => a.cmp(b),
             (Value::Integer(a), Value::Unsigned(b)) => {
@@ -173,4 +184,5 @@ enum ValueKind {
     Numeric,
     Boolean,
     String,
+    Null,
 }

@@ -64,6 +64,9 @@ pub(crate) enum Token {
     Key,
     Unique,
     References,
+    Not,
+    Null,
+    Check,
 
     // Symbols
     LeftParen,
@@ -124,6 +127,9 @@ impl PartialEq for Token {
             | (Token::Key, Token::Key)
             | (Token::Unique, Token::Unique)
             | (Token::References, Token::References)
+            | (Token::Not, Token::Not)
+            | (Token::Null, Token::Null)
+            | (Token::Check, Token::Check)
             | (Token::LeftParen, Token::LeftParen)
             | (Token::RightParen, Token::RightParen)
             | (Token::Comma, Token::Comma)
@@ -181,6 +187,9 @@ impl std::fmt::Display for Token {
             Token::Key => write!(f, "KEY"),
             Token::Unique => write!(f, "UNIQUE"),
             Token::References => write!(f, "REFERENCES"),
+            Token::Not => write!(f, "NOT"),
+            Token::Null => write!(f, "NULL"),
+            Token::Check => write!(f, "CHECK"),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
             Token::LeftParen => write!(f, "("),
@@ -471,6 +480,9 @@ impl Tokenizer {
                     "KEY" => Token::Key,
                     "UNIQUE" => Token::Unique,
                     "REFERENCES" => Token::References,
+                    "NOT" => Token::Not,
+                    "NULL" => Token::Null,
+                    "CHECK" => Token::Check,
                     _ => Token::Identifier(ident),
                 };
                 Ok(token)
@@ -588,10 +600,16 @@ impl Parser {
                     self.expect(Token::Key)?;
                     column.is_primary_key = true;
                     column.is_unique = true;
+                    column.is_not_null = true;
                 }
                 Token::Unique => {
                     self.advance();
                     column.is_unique = true;
+                }
+                Token::Not => {
+                    self.advance();
+                    self.expect(Token::Null)?;
+                    column.is_not_null = true;
                 }
                 Token::References => {
                     self.advance();
@@ -624,6 +642,13 @@ impl Parser {
                     };
                     self.expect(Token::RightParen)?;
                     column.references = Some(ForeignKeyRef::new(table, column_name));
+                }
+                Token::Check => {
+                    self.advance();
+                    self.expect(Token::LeftParen)?;
+                    let expr = self.parse_expression()?;
+                    self.expect(Token::RightParen)?;
+                    column.check = Some(expr);
                 }
                 _ => break,
             }
@@ -922,6 +947,10 @@ impl Parser {
             Token::False => {
                 self.advance();
                 Ok(Literal::Boolean(false))
+            }
+            Token::Null => {
+                self.advance();
+                Ok(Literal::Null)
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: "literal value".to_string(),

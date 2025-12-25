@@ -106,11 +106,29 @@ impl RowSerializer {
         // Write each value
         for value in row {
             match value {
-                Value::Integer(i) => codec::write_i64(&mut buf, *i)?,
-                Value::Unsigned(u) => codec::write_u64(&mut buf, *u)?,
-                Value::Float(fv) => codec::write_f64(&mut buf, *fv)?,
-                Value::Boolean(b) => codec::write_u8(&mut buf, *b as u8)?,
-                Value::String(s) => codec::write_string(&mut buf, s)?,
+                Value::Null => {
+                    codec::write_u8(&mut buf, 1)?;
+                }
+                Value::Integer(i) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_i64(&mut buf, *i)?;
+                }
+                Value::Unsigned(u) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_u64(&mut buf, *u)?;
+                }
+                Value::Float(fv) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_f64(&mut buf, *fv)?;
+                }
+                Value::Boolean(b) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_u8(&mut buf, *b as u8)?;
+                }
+                Value::String(s) => {
+                    codec::write_u8(&mut buf, 0)?;
+                    codec::write_string(&mut buf, s)?;
+                }
             }
         }
 
@@ -157,6 +175,11 @@ impl RowSerializer {
         // Deserialize each value according to schema
         let mut values = Vec::with_capacity(column_count);
         for i in 0..column_count {
+            let is_null = codec::read_u8(&mut cursor)? != 0;
+            if is_null {
+                values.push(Value::Null);
+                continue;
+            }
             let column = schema.column(i).expect("column index validated");
             let value = match column.data_type() {
                 crate::types::DataType::Integer => {

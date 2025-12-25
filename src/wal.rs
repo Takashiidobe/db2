@@ -91,6 +91,7 @@ enum ValueTag {
     Float = 2,
     Boolean = 3,
     String = 4,
+    Null = 5,
 }
 
 impl ValueTag {
@@ -101,6 +102,7 @@ impl ValueTag {
             2 => Ok(ValueTag::Float),
             3 => Ok(ValueTag::Boolean),
             4 => Ok(ValueTag::String),
+            5 => Ok(ValueTag::Null),
             _ => Err(WalError::InvalidValueTag(value)),
         }
     }
@@ -112,6 +114,7 @@ impl ValueTag {
             Value::Float(_) => ValueTag::Float,
             Value::Boolean(_) => ValueTag::Boolean,
             Value::String(_) => ValueTag::String,
+            Value::Null => ValueTag::Null,
         }
     }
 }
@@ -339,6 +342,7 @@ fn write_value(buf: &mut Vec<u8>, value: &Value) -> io::Result<()> {
         Value::Float(fv) => codec::write_f64(buf, *fv),
         Value::Boolean(b) => codec::write_u8(buf, *b as u8),
         Value::String(s) => codec::write_string(buf, s),
+        Value::Null => Ok(()),
     }
 }
 
@@ -350,6 +354,7 @@ fn read_value(cursor: &mut Cursor<&[u8]>) -> Result<Value, WalError> {
         ValueTag::Float => Value::Float(codec::read_f64(cursor)?),
         ValueTag::Boolean => Value::Boolean(codec::read_u8(cursor)? != 0),
         ValueTag::String => Value::String(codec::read_string(cursor)?),
+        ValueTag::Null => Value::Null,
     };
     Ok(value)
 }
