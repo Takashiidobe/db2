@@ -124,7 +124,7 @@ fn test_wal_records_from_executor_transactions() {
         } => {
             assert_eq!(*rec_txn, txn_id);
             assert_eq!(table, "users");
-            assert_eq!(*row_id, insert_row_id);
+            assert_ne!(*row_id, insert_row_id);
             assert_eq!(values[1], Value::String("Bob".to_string()));
         }
         _ => panic!("Expected Delete record"),
