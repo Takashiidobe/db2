@@ -11,6 +11,9 @@ mod ast_test;
 #[cfg(test)]
 mod parser_test;
 
-pub use ast::{CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, InsertStmt, Statement};
+pub use ast::{
+    CreateTableStmt, DataType, DeleteStmt, DropIndexStmt, DropTableStmt, InsertStmt, Statement,
+    UpdateStmt,
+};
 pub use executor::{ExecutionResult, Executor};
 pub use parser::{ParseError, parse_sql};

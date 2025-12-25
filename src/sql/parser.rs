@@ -1,7 +1,7 @@
 use super::ast::{
     BinaryOp, ColumnDef, ColumnRef, CreateIndexStmt, CreateTableStmt, DataType, DeleteStmt,
     DropIndexStmt, DropTableStmt, Expr, FromClause, InsertStmt, Literal, SelectColumn,
-    SelectStmt, Statement,
+    SelectStmt, Statement, UpdateStmt,
 };
 
 /// Parse errors
@@ -50,6 +50,8 @@ pub(crate) enum Token {
     And,
     Delete,
     Dot,
+    Update,
+    Set,
 
     // Symbols
     LeftParen,
@@ -93,6 +95,8 @@ impl std::fmt::Display for Token {
             Token::And => write!(f, "AND"),
             Token::Delete => write!(f, "DELETE"),
             Token::Dot => write!(f, "."),
+            Token::Update => write!(f, "UPDATE"),
+            Token::Set => write!(f, "SET"),
             Token::True => write!(f, "TRUE"),
             Token::False => write!(f, "FALSE"),
             Token::LeftParen => write!(f, "("),
@@ -298,6 +302,8 @@ impl Tokenizer {
                     "JOIN" => Token::Join,
                     "AND" => Token::And,
                     "DELETE" => Token::Delete,
+                    "UPDATE" => Token::Update,
+                    "SET" => Token::Set,
                     "TRUE" => Token::True,
                     "FALSE" => Token::False,
                     _ => Token::Identifier(ident),
@@ -573,6 +579,68 @@ impl Parser {
         };
 
         Ok(DeleteStmt::new(table_name, where_clause))
+    }
+
+    fn parse_update(&mut self) -> Result<UpdateStmt, ParseError> {
+        self.expect(Token::Update)?;
+
+        let table_name = match self.current() {
+            Token::Identifier(s) => {
+                let name = s.clone();
+                self.advance();
+                name
+            }
+            _ => {
+                return Err(ParseError::UnexpectedToken {
+                    expected: "table name".to_string(),
+                    found: format!("{}", self.current()),
+                });
+            }
+        };
+
+        self.expect(Token::Set)?;
+
+        let mut assignments = Vec::new();
+        loop {
+            let column_name = match self.current() {
+                Token::Identifier(s) => {
+                    let name = s.clone();
+                    self.advance();
+                    name
+                }
+                _ => {
+                    return Err(ParseError::UnexpectedToken {
+                        expected: "column name".to_string(),
+                        found: format!("{}", self.current()),
+                    });
+                }
+            };
+
+            self.expect(Token::Equals)?;
+            let expr = self.parse_expression()?;
+            if matches!(expr, Expr::BinaryOp { .. }) {
+                return Err(ParseError::InvalidSyntax(
+                    "SET expressions must be a column or literal".to_string(),
+                ));
+            }
+
+            assignments.push((column_name, expr));
+
+            if matches!(self.current(), Token::Comma) {
+                self.advance();
+            } else {
+                break;
+            }
+        }
+
+        let where_clause = if matches!(self.current(), Token::Where) {
+            self.advance();
+            Some(self.parse_expression()?)
+        } else {
+            None
+        };
+
+        Ok(UpdateStmt::new(table_name, assignments, where_clause))
     }
 
     fn parse_literal(&mut self) -> Result<Literal, ParseError> {
@@ -908,6 +976,10 @@ impl Parser {
             Token::Delete => {
                 let stmt = self.parse_delete()?;
                 Ok(Statement::Delete(stmt))
+            }
+            Token::Update => {
+                let stmt = self.parse_update()?;
+                Ok(Statement::Update(stmt))
             }
             Token::Eof => Err(ParseError::UnexpectedEof),
             token => Err(ParseError::UnexpectedToken {

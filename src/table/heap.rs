@@ -1,5 +1,5 @@
 use crate::serialization::RowSerializer;
-use crate::storage::{BufferPool, PageId, PageType, SlotId};
+use crate::storage::{BufferPool, PageError, PageId, PageType, SlotId};
 use crate::types::{Schema, Value};
 use std::io;
 use std::path::Path;
@@ -233,6 +233,45 @@ impl HeapTable {
         self.buffer_pool.unpin_page(row_id.page_id, true);
 
         Ok(())
+    }
+
+    /// Update an existing row.
+    ///
+    /// Attempts to update in place; if the new row is larger than the existing slot,
+    /// falls back to deleting and reinserting the row (which may change the RowId).
+    pub fn update(&mut self, row_id: RowId, new_row: &[Value]) -> io::Result<RowId> {
+        // Validate and serialize the new row
+        self.schema.validate_row(new_row).map_err(|e| {
+            io::Error::new(
+                io::ErrorKind::InvalidInput,
+                format!("Schema validation failed: {}", e),
+            )
+        })?;
+
+        let row_data = RowSerializer::serialize(new_row, Some(&self.schema))
+            .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+
+        // Try to update in place first
+        let page = self.buffer_pool.fetch_page(row_id.page_id)?;
+        match page.update_row(row_id.slot_id, &row_data) {
+            Ok(()) => {
+                self.buffer_pool.unpin_page(row_id.page_id, true);
+                return Ok(row_id);
+            }
+            Err(PageError::PageFull) => {
+                // Fall through to move the row
+                self.buffer_pool.unpin_page(row_id.page_id, false);
+            }
+            Err(e) => {
+                self.buffer_pool.unpin_page(row_id.page_id, false);
+                return Err(io::Error::from(e));
+            }
+        }
+
+        // If we couldn't update in place, delete and re-insert the row
+        self.delete(row_id)?;
+        let new_row_id = self.insert(new_row)?;
+        Ok(new_row_id)
     }
 
     /// Flush all dirty pages to disk

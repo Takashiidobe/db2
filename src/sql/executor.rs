@@ -1,6 +1,6 @@
 use super::ast::{
     BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, DeleteStmt, DropIndexStmt,
-    DropTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement,
+    DropTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt, Statement, UpdateStmt,
 };
 use crate::index::BPlusTree;
 use crate::optimizer::planner::{
@@ -8,7 +8,7 @@ use crate::optimizer::planner::{
 };
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
@@ -38,6 +38,8 @@ pub enum ExecutionResult {
     DropIndex { index_name: String },
     /// Rows deleted successfully
     Delete { rows_deleted: usize },
+    /// Rows updated successfully
+    Update { rows_updated: usize },
 }
 
 impl std::fmt::Display for ExecutionResult {
@@ -109,6 +111,13 @@ impl std::fmt::Display for ExecutionResult {
                     write!(f, "1 row deleted")
                 } else {
                     write!(f, "{} rows deleted", rows_deleted)
+                }
+            }
+            ExecutionResult::Update { rows_updated } => {
+                if *rows_updated == 1 {
+                    write!(f, "1 row updated")
+                } else {
+                    write!(f, "{} rows updated", rows_updated)
                 }
             }
         }
@@ -234,6 +243,7 @@ impl Executor {
             Statement::CreateIndex(create_index) => self.execute_create_index(create_index),
             Statement::DropIndex(drop_index) => self.execute_drop_index(drop_index),
             Statement::Delete(delete) => self.execute_delete(delete),
+            Statement::Update(update) => self.execute_update(update),
         }
     }
 
@@ -400,6 +410,141 @@ impl Executor {
         }
 
         Ok(ExecutionResult::Delete { rows_deleted })
+    }
+
+    /// Execute UPDATE statement
+    fn execute_update(&mut self, stmt: UpdateStmt) -> io::Result<ExecutionResult> {
+        if stmt.assignments.is_empty() {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "UPDATE must specify at least one column",
+            ));
+        }
+
+        let table_name = stmt.table_name;
+        let where_clause = stmt.where_clause;
+
+        // Fetch schema for validation and column resolution
+        let schema = {
+            let table = self.tables.get(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+            table.schema().clone()
+        };
+        let columns_meta = Self::build_column_metadata_for_table(&table_name, &schema);
+
+        // Resolve assignment targets and pre-validate literals
+        let mut seen_columns = HashSet::new();
+        let mut assignments = Vec::new();
+        for (col_name, expr) in stmt.assignments {
+            let (idx, column) = schema.find_column(&col_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Column '{}' not found in table '{}'", col_name, table_name),
+                )
+            })?;
+
+            if !seen_columns.insert(idx) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Duplicate assignment for column '{}'", col_name),
+                ));
+            }
+
+            if let Expr::Literal(ref lit) = expr {
+                let value = match lit {
+                    Literal::Integer(i) => Value::Integer(*i),
+                    Literal::Boolean(b) => Value::Boolean(*b),
+                    Literal::String(s) => Value::String(s.clone()),
+                };
+
+                if !column.data_type().matches(&value) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Type mismatch in column '{}': expected {}, found {:?}",
+                            column.name(),
+                            column.data_type(),
+                            value
+                        ),
+                    ));
+                }
+            }
+
+            assignments.push((idx, expr));
+        }
+
+        let planner = Planner::new(self.index_metadata());
+        let scan_plan = planner.plan_scan(&table_name, where_clause.as_ref());
+        let row_ids = match scan_plan {
+            ScanPlan::IndexScan {
+                index_columns,
+                predicates,
+            } => self.index_scan(&table_name, &index_columns, &predicates)?,
+            ScanPlan::SeqScan => None,
+        };
+
+        let mut rows_updated = 0;
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            let mut pending_updates: Vec<(RowId, Vec<Value>)> = Vec::new();
+
+            if let Some(row_ids) = row_ids {
+                for row_id in row_ids {
+                    let row = match table.get(row_id) {
+                        Ok(row) => row,
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                        Err(e) => return Err(e),
+                    };
+
+                    if let Some(ref expr) = where_clause
+                        && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
+                    {
+                        continue;
+                    }
+
+                    let new_row =
+                        Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
+                    pending_updates.push((row_id, new_row));
+                }
+            } else {
+                let mut scan = TableScan::new(table);
+                while let Some((row_id, row)) = scan.next()? {
+                    if let Some(ref expr) = where_clause
+                        && !Self::evaluate_predicate_static(expr, &row, &columns_meta)?
+                    {
+                        continue;
+                    }
+
+                    let new_row =
+                        Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
+                    pending_updates.push((row_id, new_row));
+                }
+            }
+
+            for (row_id, new_row) in pending_updates {
+                match table.update(row_id, &new_row) {
+                    Ok(_) => rows_updated += 1,
+                    Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
+                    Err(e) => return Err(e),
+                }
+            }
+        }
+
+        if rows_updated > 0 {
+            self.rebuild_indexes_for_table(&table_name)?;
+        }
+
+        Ok(ExecutionResult::Update { rows_updated })
     }
 
     /// Execute INSERT statement
@@ -1049,6 +1194,41 @@ impl Executor {
         }
 
         Ok(Some(row_ids))
+    }
+
+    fn apply_assignments(
+        row: &[Value],
+        assignments: &[(usize, Expr)],
+        schema: &Schema,
+        columns_meta: &[(Option<String>, String)],
+    ) -> io::Result<Vec<Value>> {
+        let mut new_row = row.to_vec();
+
+        for (idx, expr) in assignments {
+            let value = Self::evaluate_expr_static(expr, row, columns_meta)?;
+            let column = schema.column(*idx).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!("Invalid column index {}", idx),
+                )
+            })?;
+
+            if !column.data_type().matches(&value) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Type mismatch in column '{}': expected {}, found {:?}",
+                        column.name(),
+                        column.data_type(),
+                        value
+                    ),
+                ));
+            }
+
+            new_row[*idx] = value;
+        }
+
+        Ok(new_row)
     }
 
     /// Evaluate a predicate expression against a row (static version)

@@ -241,6 +241,28 @@ impl DeleteStmt {
     }
 }
 
+/// UPDATE statement
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UpdateStmt {
+    pub table_name: String,
+    pub assignments: Vec<(String, Expr)>,
+    pub where_clause: Option<Expr>,
+}
+
+impl UpdateStmt {
+    pub fn new(
+        table_name: impl Into<String>,
+        assignments: Vec<(String, Expr)>,
+        where_clause: Option<Expr>,
+    ) -> Self {
+        Self {
+            table_name: table_name.into(),
+            assignments,
+            where_clause,
+        }
+    }
+}
+
 /// SQL statement
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Statement {
@@ -251,4 +273,5 @@ pub enum Statement {
     CreateIndex(CreateIndexStmt),
     DropIndex(DropIndexStmt),
     Delete(DeleteStmt),
+    Update(UpdateStmt),
 }

@@ -9,6 +9,7 @@ fn main() -> io::Result<()> {
     println!("  DROP TABLE <name>");
     println!("  CREATE INDEX <idx_name> ON <table>(<column>)");
     println!("  INSERT INTO <name> VALUES (<val1>, <val2>, ...)");
+    println!("  UPDATE <table> SET <col> = <expr>[, ...] [WHERE <pred>]");
     println!("  DELETE FROM <name> [WHERE <pred>]");
     println!("  SELECT <cols|*> FROM <table> [WHERE <pred>] [JOIN ...]");
     println!("  .exit - Exit the program");
