@@ -37,7 +37,11 @@ impl BTreePageIndex {
     }
 
     /// Open an existing B+ tree index
-    pub fn open(path: impl AsRef<Path>, buffer_pool_size: usize, root_page_id: PageId) -> io::Result<Self> {
+    pub fn open(
+        path: impl AsRef<Path>,
+        buffer_pool_size: usize,
+        root_page_id: PageId,
+    ) -> io::Result<Self> {
         let buffer_pool = BufferPool::new(buffer_pool_size, path)?;
 
         Ok(Self {
@@ -60,7 +64,8 @@ impl BTreePageIndex {
             let new_root = self.buffer_pool.new_page(PageType::BTreeInternal)?;
             let new_root_id = new_root.page_id();
 
-            let internal_data = serialize_internal_node(&[split_key], &[self.root_page_id, new_child_id])?;
+            let internal_data =
+                serialize_internal_node(&[split_key], &[self.root_page_id, new_child_id])?;
             new_root.add_row(&internal_data)?;
 
             self.buffer_pool.unpin_page(new_root_id, true);
@@ -85,7 +90,10 @@ impl BTreePageIndex {
         match page_type {
             PageType::BTreeInternal => self.insert_internal(page_id, key, value),
             PageType::BTreeLeaf => self.insert_leaf(page_id, key, value),
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid page type for B+ tree")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid page type for B+ tree",
+            )),
         }
     }
 
@@ -99,9 +107,9 @@ impl BTreePageIndex {
         // Read current node
         let (keys, mut children) = {
             let page = self.buffer_pool.fetch_page(page_id)?;
-            let data = page.get_row(0).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Empty internal node")
-            })?;
+            let data = page
+                .get_row(0)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty internal node"))?;
             let (keys, children) = deserialize_internal_node(data)?;
             self.buffer_pool.unpin_page(page_id, false);
             (keys, children)
@@ -149,9 +157,9 @@ impl BTreePageIndex {
         // Read current leaf
         let (mut keys, mut values, next) = {
             let page = self.buffer_pool.fetch_page(page_id)?;
-            let data = page.get_row(0).ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "Empty leaf node")
-            })?;
+            let data = page
+                .get_row(0)
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty leaf node"))?;
             let (keys, values, next) = deserialize_leaf_node(data)?;
             self.buffer_pool.unpin_page(page_id, false);
             (keys, values, next)
@@ -272,9 +280,10 @@ impl BTreePageIndex {
     fn search_recursive(&mut self, page_id: PageId, key: i64) -> io::Result<Option<PageId>> {
         let page = self.buffer_pool.fetch_page(page_id)?;
         let page_type = page.page_type();
-        let data = page.get_row(0).ok_or_else(|| {
-            io::Error::new(io::ErrorKind::InvalidData, "Empty node")
-        })?.to_vec();
+        let data = page
+            .get_row(0)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Empty node"))?
+            .to_vec();
         self.buffer_pool.unpin_page(page_id, false);
 
         match page_type {
@@ -290,7 +299,10 @@ impl BTreePageIndex {
                 let (keys, values, _) = deserialize_leaf_node(&data)?;
                 Ok(keys.binary_search(&key).ok().map(|pos| values[pos]))
             }
-            _ => Err(io::Error::new(io::ErrorKind::InvalidData, "Invalid page type")),
+            _ => Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "Invalid page type",
+            )),
         }
     }
 
@@ -354,7 +366,11 @@ fn deserialize_internal_node(data: &[u8]) -> io::Result<(Vec<i64>, Vec<PageId>)>
 }
 
 /// Serialize leaf node (fixed-size format)
-fn serialize_leaf_node(keys: &[i64], values: &[PageId], next: Option<PageId>) -> io::Result<Vec<u8>> {
+fn serialize_leaf_node(
+    keys: &[i64],
+    values: &[PageId],
+    next: Option<PageId>,
+) -> io::Result<Vec<u8>> {
     let mut buf = Vec::new();
 
     // Write actual number of keys
@@ -411,67 +427,4 @@ fn deserialize_leaf_node(data: &[u8]) -> io::Result<(Vec<i64>, Vec<PageId>, Opti
     let next = if next_val == 0 { None } else { Some(next_val) };
 
     Ok((keys, values, next))
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::NamedTempFile;
-
-    #[test]
-    fn test_create_btree() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let btree = BTreePageIndex::create(temp_file.path(), 10);
-        assert!(btree.is_ok());
-    }
-
-    #[test]
-    fn test_insert_and_search() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let mut btree = BTreePageIndex::create(temp_file.path(), 10).unwrap();
-
-        btree.insert(1, 100).unwrap();
-        btree.insert(2, 200).unwrap();
-        btree.insert(3, 300).unwrap();
-
-        assert_eq!(btree.search(1).unwrap(), Some(100));
-        assert_eq!(btree.search(2).unwrap(), Some(200));
-        assert_eq!(btree.search(3).unwrap(), Some(300));
-        assert_eq!(btree.search(4).unwrap(), None);
-    }
-
-    #[test]
-    fn test_persistence() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let path = temp_file.path().to_owned();
-
-        let root_page_id = {
-            let mut btree = BTreePageIndex::create(&path, 10).unwrap();
-            btree.insert(1, 100).unwrap();
-            btree.insert(2, 200).unwrap();
-            btree.flush().unwrap();
-            btree.root_page_id()
-        };
-
-        // Reopen and verify
-        {
-            let mut btree = BTreePageIndex::open(&path, 10, root_page_id).unwrap();
-            assert_eq!(btree.search(1).unwrap(), Some(100));
-            assert_eq!(btree.search(2).unwrap(), Some(200));
-        }
-    }
-
-    #[test]
-    fn test_many_insertions() {
-        let temp_file = NamedTempFile::new().unwrap();
-        let mut btree = BTreePageIndex::create(temp_file.path(), 20).unwrap();
-
-        for i in 1..=20 {
-            btree.insert(i, i as PageId * 10).unwrap();
-        }
-
-        for i in 1..=20 {
-            assert_eq!(btree.search(i).unwrap(), Some(i as PageId * 10));
-        }
-    }
 }

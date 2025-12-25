@@ -1,9 +1,11 @@
 use super::ast::{
-    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, Expr, InsertStmt, Literal, SelectColumn, SelectStmt,
-    Statement,
+    BinaryOp, ColumnRef, CreateIndexStmt, CreateTableStmt, Expr, InsertStmt, Literal, SelectColumn,
+    SelectStmt, Statement,
 };
 use crate::index::BPlusTree;
-use crate::optimizer::planner::{FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan};
+use crate::optimizer::planner::{
+    FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
+};
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
 use std::collections::HashMap;
@@ -51,7 +53,11 @@ impl std::fmt::Display for ExecutionResult {
                     write!(f, "{} rows inserted", row_ids.len())
                 }
             }
-            ExecutionResult::Select { column_names, rows, plan } => {
+            ExecutionResult::Select {
+                column_names,
+                rows,
+                plan,
+            } => {
                 if !plan.is_empty() {
                     write!(f, "Plan:")?;
                     for step in plan {
@@ -239,12 +245,7 @@ impl Executor {
         let table_path = self.db_path.join(format!("{}.db", stmt.table_name));
 
         // Create the heap table
-        let table = HeapTable::create(
-            &stmt.table_name,
-            schema,
-            table_path,
-            self.buffer_pool_size,
-        )?;
+        let table = HeapTable::create(&stmt.table_name, schema, table_path, self.buffer_pool_size)?;
 
         let table_name = stmt.table_name.clone();
         self.tables.insert(stmt.table_name, table);
@@ -283,7 +284,11 @@ impl Executor {
 
             let row_id = table.insert(&values)?;
 
-            for index in self.indexes.iter_mut().filter(|idx| idx.key.table == stmt.table_name) {
+            for index in self
+                .indexes
+                .iter_mut()
+                .filter(|idx| idx.key.table == stmt.table_name)
+            {
                 let key = Self::build_composite_key(&values, &index.column_indices)?;
                 index.tree.insert(key, row_id);
             }
@@ -342,7 +347,10 @@ impl Executor {
             let (idx, column) = schema.find_column(col_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
-                    format!("Column '{}' not found in table '{}'", col_name, stmt.table_name),
+                    format!(
+                        "Column '{}' not found in table '{}'",
+                        col_name, stmt.table_name
+                    ),
                 )
             })?;
 
@@ -430,9 +438,10 @@ impl Executor {
             Self::build_projection(&columns_meta, &columns, false)?;
 
         let row_ids = match scan_plan {
-            ScanPlan::IndexScan { index_columns, predicates } => {
-                self.index_scan(&table_name, &index_columns, &predicates)?
-            }
+            ScanPlan::IndexScan {
+                index_columns,
+                predicates,
+            } => self.index_scan(&table_name, &index_columns, &predicates)?,
             ScanPlan::SeqScan => None,
         };
 
@@ -458,10 +467,8 @@ impl Executor {
                 }
 
                 // Project selected columns
-                let projected_row: Vec<Value> = column_indices
-                    .iter()
-                    .map(|&idx| row[idx].clone())
-                    .collect();
+                let projected_row: Vec<Value> =
+                    column_indices.iter().map(|&idx| row[idx].clone()).collect();
 
                 result_rows.push(projected_row);
             }
@@ -478,10 +485,8 @@ impl Executor {
                 }
 
                 // Project selected columns
-                let projected_row: Vec<Value> = column_indices
-                    .iter()
-                    .map(|&idx| row[idx].clone())
-                    .collect();
+                let projected_row: Vec<Value> =
+                    column_indices.iter().map(|&idx| row[idx].clone()).collect();
 
                 result_rows.push(projected_row);
             }
@@ -522,10 +527,16 @@ impl Executor {
         };
 
         // Resolve join columns
-        let left_join_idx =
-            Self::resolve_schema_column_index(&left_schema, &join_plan.outer_table, &join_plan.outer_column)?;
-        let right_join_idx =
-            Self::resolve_schema_column_index(&right_schema, &join_plan.inner_table, &join_plan.inner_column)?;
+        let left_join_idx = Self::resolve_schema_column_index(
+            &left_schema,
+            &join_plan.outer_table,
+            &join_plan.outer_column,
+        )?;
+        let right_join_idx = Self::resolve_schema_column_index(
+            &right_schema,
+            &join_plan.inner_table,
+            &join_plan.inner_column,
+        )?;
 
         let combined_meta = Self::build_join_column_metadata(
             &join_plan.outer_table,
@@ -537,30 +548,26 @@ impl Executor {
             Self::build_projection(&combined_meta, &columns, true)?;
 
         match join_plan.strategy {
-            JoinStrategy::NestedLoop { inner_has_index } => {
-                self.execute_nested_loop_join(
-                    join_plan,
-                    where_clause,
-                    left_join_idx,
-                    right_join_idx,
-                    &right_schema,
-                    &combined_meta,
-                    column_indices,
-                    column_names,
-                    inner_has_index,
-                )
-            }
-            JoinStrategy::MergeJoin => {
-                self.execute_merge_join(
-                    join_plan,
-                    where_clause,
-                    left_join_idx,
-                    right_join_idx,
-                    &combined_meta,
-                    column_indices,
-                    column_names,
-                )
-            }
+            JoinStrategy::NestedLoop { inner_has_index } => self.execute_nested_loop_join(
+                join_plan,
+                where_clause,
+                left_join_idx,
+                right_join_idx,
+                &right_schema,
+                &combined_meta,
+                column_indices,
+                column_names,
+                inner_has_index,
+            ),
+            JoinStrategy::MergeJoin => self.execute_merge_join(
+                join_plan,
+                where_clause,
+                left_join_idx,
+                right_join_idx,
+                &combined_meta,
+                column_indices,
+                column_names,
+            ),
         }
     }
 
@@ -601,7 +608,9 @@ impl Executor {
             right_schema.columns()[right_join_idx].data_type() == DbDataType::Integer;
         let use_right_index = inner_has_index
             && right_join_is_integer
-            && self.find_index_on_first_column(&index_key.0, &index_key.1).is_some();
+            && self
+                .find_index_on_first_column(&index_key.0, &index_key.1)
+                .is_some();
 
         let mut plan_steps = Vec::new();
         plan_steps.push(format!("Seq scan outer table {}", join_plan.outer_table));
@@ -652,7 +661,8 @@ impl Executor {
                 if let Value::Integer(key) = left_key {
                     // Look up matching row IDs via index first
                     let mut matched_ids = Vec::new();
-                    if let Some(index) = self.find_index_on_first_column(&index_key.0, &index_key.1) {
+                    if let Some(index) = self.find_index_on_first_column(&index_key.0, &index_key.1)
+                    {
                         let len = index.key.columns.len();
                         let start = {
                             let mut vals = vec![i64::MIN; len];
@@ -771,7 +781,11 @@ impl Executor {
                             combined.extend(right_rows[rj].1.clone());
 
                             if let Some(ref where_expr) = where_clause
-                                && !Self::evaluate_predicate_static(where_expr, &combined, combined_meta)?
+                                && !Self::evaluate_predicate_static(
+                                    where_expr,
+                                    &combined,
+                                    combined_meta,
+                                )?
                             {
                                 continue;
                             }
@@ -815,7 +829,10 @@ impl Executor {
             if join_idx >= row.len() {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Join column index {} out of bounds for table {}", join_idx, table_name),
+                    format!(
+                        "Join column index {} out of bounds for table {}",
+                        join_idx, table_name
+                    ),
                 ));
             }
             rows.push((row[join_idx].clone(), row));
@@ -831,7 +848,6 @@ impl Executor {
         }
         idx
     }
-
 
     /// Use an index for a simple predicate if available.
     /// Returns Some(row_ids) if an index can be used, None otherwise.
@@ -937,7 +953,10 @@ impl Executor {
             .collect()
     }
 
-    fn build_column_metadata_for_table(table_name: &str, schema: &Schema) -> Vec<(Option<String>, String)> {
+    fn build_column_metadata_for_table(
+        table_name: &str,
+        schema: &Schema,
+    ) -> Vec<(Option<String>, String)> {
         schema
             .columns()
             .iter()
@@ -952,7 +971,10 @@ impl Executor {
         right_schema: &Schema,
     ) -> Vec<(Option<String>, String)> {
         let mut columns = Self::build_column_metadata_for_table(left_table, left_schema);
-        columns.extend(Self::build_column_metadata_for_table(right_table, right_schema));
+        columns.extend(Self::build_column_metadata_for_table(
+            right_table,
+            right_schema,
+        ));
         columns
     }
 
@@ -983,10 +1005,7 @@ impl Executor {
                 for col_ref in cols {
                     let idx = Self::resolve_column_index(columns_meta, col_ref)?;
                     indices.push(idx);
-                    names.push(Self::format_column_name(
-                        &columns_meta[idx],
-                        use_qualified,
-                    ));
+                    names.push(Self::format_column_name(&columns_meta[idx], use_qualified));
                 }
                 Ok((indices, names))
             }
@@ -997,13 +1016,14 @@ impl Executor {
         columns_meta: &[(Option<String>, String)],
         col_ref: &ColumnRef,
     ) -> io::Result<usize> {
-        let mut matches = columns_meta
-            .iter()
-            .enumerate()
-            .filter(|(_, (table, name))| match &col_ref.table {
-                Some(t) => table.as_deref() == Some(t) && name == &col_ref.column,
-                None => name == &col_ref.column,
-            });
+        let mut matches =
+            columns_meta
+                .iter()
+                .enumerate()
+                .filter(|(_, (table, name))| match &col_ref.table {
+                    Some(t) => table.as_deref() == Some(t) && name == &col_ref.column,
+                    None => name == &col_ref.column,
+                });
 
         let first = matches.next();
         let second = matches.next();
@@ -1039,7 +1059,10 @@ impl Executor {
             if table != table_name {
                 return Err(io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Column '{}' does not belong to table '{}'", col_ref.column, table_name),
+                    format!(
+                        "Column '{}' does not belong to table '{}'",
+                        col_ref.column, table_name
+                    ),
                 ));
             }
         }
@@ -1050,7 +1073,10 @@ impl Executor {
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    format!("Column '{}' not found in table '{}'", col_ref.column, table_name),
+                    format!(
+                        "Column '{}' not found in table '{}'",
+                        col_ref.column, table_name
+                    ),
                 )
             })
     }
@@ -1064,7 +1090,7 @@ impl Executor {
                     return Err(io::Error::new(
                         io::ErrorKind::InvalidInput,
                         "Indexing currently only supports INTEGER columns",
-                    ))
+                    ));
                 }
             }
         }
@@ -1072,9 +1098,9 @@ impl Executor {
     }
 
     fn find_index_on_first_column(&self, table: &str, column: &str) -> Option<&IndexEntry> {
-        self.indexes
-            .iter()
-            .find(|idx| idx.key.table == table && idx.key.columns.first().map_or(false, |c| c == column))
+        self.indexes.iter().find(|idx| {
+            idx.key.table == table && idx.key.columns.first().map_or(false, |c| c == column)
+        })
     }
 
     fn find_index(&self, table: &str, columns: &[String]) -> Option<&IndexEntry> {
@@ -1179,7 +1205,9 @@ impl Executor {
         let data = fs::read_to_string(&path)?;
         for line in data.lines() {
             let mut parts = line.split('|');
-            let (Some(name), Some(table), Some(cols_str)) = (parts.next(), parts.next(), parts.next()) else {
+            let (Some(name), Some(table), Some(cols_str)) =
+                (parts.next(), parts.next(), parts.next())
+            else {
                 continue;
             };
 
@@ -1239,10 +1267,15 @@ impl Executor {
     fn describe_scan(table: &str, scan_plan: &ScanPlan) -> String {
         match scan_plan {
             ScanPlan::SeqScan => format!("Seq scan on {}", table),
-            ScanPlan::IndexScan { index_columns, predicates } => {
+            ScanPlan::IndexScan {
+                index_columns,
+                predicates,
+            } => {
                 let pred_str = predicates
                     .iter()
-                    .map(|(col, op, lit)| format!("{} {} {}", col, Self::format_binary_op(*op), lit))
+                    .map(|(col, op, lit)| {
+                        format!("{} {} {}", col, Self::format_binary_op(*op), lit)
+                    })
                     .collect::<Vec<_>>()
                     .join(" AND ");
                 format!(
@@ -1315,691 +1348,5 @@ impl Executor {
                 )
             })
             .collect()
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::sql::parser::parse_sql;
-    use tempfile::TempDir;
-
-    #[test]
-    fn test_create_table() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        let sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
-        let stmt = parse_sql(sql).unwrap();
-        let result = executor.execute(stmt).unwrap();
-
-        match result {
-            ExecutionResult::CreateTable { table_name } => {
-                assert_eq!(table_name, "users");
-            }
-            _ => panic!("Expected CreateTable result"),
-        }
-
-        // Verify table exists
-        assert!(executor.get_table("users").is_some());
-    }
-
-    #[test]
-    fn test_create_table_duplicate() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        let sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
-        let stmt = parse_sql(sql).unwrap();
-        executor.execute(stmt).unwrap();
-
-        // Try to create again
-        let sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
-        let stmt = parse_sql(sql).unwrap();
-        let result = executor.execute(stmt);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_insert() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        let create_sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
-        let stmt = parse_sql(create_sql).unwrap();
-        executor.execute(stmt).unwrap();
-
-        // Insert row
-        let insert_sql = "INSERT INTO users VALUES (1, 'Alice')";
-        let stmt = parse_sql(insert_sql).unwrap();
-        let result = executor.execute(stmt).unwrap();
-
-        match result {
-            ExecutionResult::Insert { row_ids } => {
-                assert_eq!(row_ids.len(), 1);
-                let row_id = row_ids[0];
-                assert_eq!(row_id.page_id(), 1); // First data page
-                assert_eq!(row_id.slot_id(), 0); // First slot
-            }
-            _ => panic!("Expected Insert result"),
-        }
-    }
-
-    #[test]
-    fn test_insert_multiple_rows() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        let create_sql = "CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)";
-        let stmt = parse_sql(create_sql).unwrap();
-        executor.execute(stmt).unwrap();
-
-        // Insert multiple rows
-        let inserts = vec![
-            "INSERT INTO users VALUES (1, 'Alice', 30)",
-            "INSERT INTO users VALUES (2, 'Bob', 25)",
-            "INSERT INTO users VALUES (3, 'Charlie', 35)",
-        ];
-
-        for insert_sql in inserts {
-            let stmt = parse_sql(insert_sql).unwrap();
-            executor.execute(stmt).unwrap();
-        }
-
-        // Verify we can retrieve rows
-        let table = executor.get_table("users").unwrap();
-        let row = table.get(RowId::new(1, 0)).unwrap();
-        assert_eq!(row[0], Value::Integer(1));
-        assert_eq!(row[1], Value::String("Alice".to_string()));
-        assert_eq!(row[2], Value::Integer(30));
-    }
-
-    #[test]
-    fn test_insert_nonexistent_table() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        let insert_sql = "INSERT INTO nonexistent VALUES (1, 'Alice')";
-        let stmt = parse_sql(insert_sql).unwrap();
-        let result = executor.execute(stmt);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_insert_multi_tuple_single_statement() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE pairs (id INTEGER, val INTEGER)").unwrap()).unwrap();
-        let result = executor
-            .execute(parse_sql("INSERT INTO pairs VALUES (1, 2), (3, 4)").unwrap())
-            .unwrap();
-
-        match result {
-            ExecutionResult::Insert { row_ids } => {
-                assert_eq!(row_ids.len(), 2);
-            }
-            _ => panic!("Expected Insert result"),
-        }
-
-        let result = executor.execute(parse_sql("SELECT * FROM pairs").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_insert_schema_validation() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        let create_sql = "CREATE TABLE users (id INTEGER, name VARCHAR)";
-        let stmt = parse_sql(create_sql).unwrap();
-        executor.execute(stmt).unwrap();
-
-        // Try to insert wrong number of values
-        let insert_sql = "INSERT INTO users VALUES (1)";
-        let stmt = parse_sql(insert_sql).unwrap();
-        let result = executor.execute(stmt);
-
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_end_to_end() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        let create_sql = "CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)";
-        executor.execute(parse_sql(create_sql).unwrap()).unwrap();
-
-        // Insert products
-        let products = vec![
-            "INSERT INTO products VALUES (1, 'Laptop', 1000)",
-            "INSERT INTO products VALUES (2, 'Mouse', 25)",
-            "INSERT INTO products VALUES (3, 'Keyboard', 75)",
-        ];
-
-        for sql in products {
-            executor.execute(parse_sql(sql).unwrap()).unwrap();
-        }
-
-        // Verify data
-        let table = executor.get_table("products").unwrap();
-
-        let laptop = table.get(RowId::new(1, 0)).unwrap();
-        assert_eq!(laptop[1], Value::String("Laptop".to_string()));
-        assert_eq!(laptop[2], Value::Integer(1000));
-
-        let mouse = table.get(RowId::new(1, 1)).unwrap();
-        assert_eq!(mouse[1], Value::String("Mouse".to_string()));
-        assert_eq!(mouse[2], Value::Integer(25));
-    }
-
-    #[test]
-    fn test_flush_all() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE test (id INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO test VALUES (42)").unwrap()).unwrap();
-
-        // Flush
-        executor.flush_all().unwrap();
-    }
-
-    #[test]
-    fn test_reload_tables_from_disk() {
-        let temp_dir = TempDir::new().unwrap();
-        {
-            let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-            executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-            executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-            executor.flush_all().unwrap();
-        }
-
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-        let table = executor.get_table("users").expect("table should reload");
-        let row = table.get(RowId::new(1, 0)).unwrap();
-        assert_eq!(row[0], Value::Integer(1));
-        assert_eq!(row[1], Value::String("Alice".to_string()));
-    }
-
-    #[test]
-    fn test_select_all() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (3, 'Charlie')").unwrap()).unwrap();
-
-        // SELECT * FROM users
-        let result = executor.execute(parse_sql("SELECT * FROM users").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { column_names, rows, .. } => {
-                assert_eq!(column_names, vec!["id", "name"]);
-                assert_eq!(rows.len(), 3);
-                assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string())]);
-                assert_eq!(rows[1], vec![Value::Integer(2), Value::String("Bob".to_string())]);
-                assert_eq!(rows[2], vec![Value::Integer(3), Value::String("Charlie".to_string())]);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_select_columns() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice', 30)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob', 25)").unwrap()).unwrap();
-
-        // SELECT name, age FROM users
-        let result = executor.execute(parse_sql("SELECT name, age FROM users").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { column_names, rows, .. } => {
-                assert_eq!(column_names, vec!["name", "age"]);
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0], vec![Value::String("Alice".to_string()), Value::Integer(30)]);
-                assert_eq!(rows[1], vec![Value::String("Bob".to_string()), Value::Integer(25)]);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_select_where_equal() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR, age INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice', 30)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob', 25)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (3, 'Charlie', 30)").unwrap()).unwrap();
-
-        // SELECT * FROM users WHERE age = 30
-        let result = executor.execute(parse_sql("SELECT * FROM users WHERE age = 30").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0][1], Value::String("Alice".to_string()));
-                assert_eq!(rows[1][1], Value::String("Charlie".to_string()));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_select_where_comparison() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (1, 'Laptop', 1000)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (2, 'Mouse', 25)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (3, 'Keyboard', 75)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (4, 'Monitor', 300)").unwrap()).unwrap();
-
-        // SELECT * FROM products WHERE price > 100
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price > 100").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0][1], Value::String("Laptop".to_string()));
-                assert_eq!(rows[1][1], Value::String("Monitor".to_string()));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_select_where_string() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (3, 'Alice')").unwrap()).unwrap();
-
-        // SELECT * FROM users WHERE name = 'Alice'
-        let result = executor.execute(parse_sql("SELECT * FROM users WHERE name = 'Alice'").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0][0], Value::Integer(1));
-                assert_eq!(rows[1][0], Value::Integer(3));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_boolean_columns() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE flags (id INTEGER, active BOOLEAN)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO flags VALUES (1, true)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO flags VALUES (2, false)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql("SELECT * FROM flags WHERE active = true").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0][0], Value::Integer(1));
-                assert_eq!(rows[0][1], Value::Boolean(true));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_select_empty_result() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-
-        // SELECT * FROM users WHERE id = 999
-        let result = executor.execute(parse_sql("SELECT * FROM users WHERE id = 999").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 0);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_create_index() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-
-        // Create index
-        let result = executor.execute(parse_sql("CREATE INDEX idx_id ON users(id)").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::CreateIndex { index_name, table_name, columns } => {
-                assert_eq!(index_name, "idx_id");
-                assert_eq!(table_name, "users");
-                assert_eq!(columns, vec!["id".to_string()]);
-            }
-            _ => panic!("Expected CreateIndex result"),
-        }
-    }
-
-    #[test]
-    fn test_index_scan() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create and populate table
-        executor.execute(parse_sql("CREATE TABLE products (id INTEGER, name VARCHAR, price INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (1, 'Laptop', 1000)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (2, 'Mouse', 25)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (3, 'Keyboard', 75)").unwrap()).unwrap();
-
-        // Create index on id
-        executor.execute(parse_sql("CREATE INDEX idx_id ON products(id)").unwrap()).unwrap();
-
-        // Query using index (WHERE id = 2)
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE id = 2").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0][0], Value::Integer(2));
-                assert_eq!(rows[0][1], Value::String("Mouse".to_string()));
-                assert_eq!(rows[0][2], Value::Integer(25));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_index_maintained_on_insert() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table and index
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE INDEX idx_id ON users(id)").unwrap()).unwrap();
-
-        // Insert rows after creating index
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (3, 'Charlie')").unwrap()).unwrap();
-
-        // Query using index
-        let result = executor.execute(parse_sql("SELECT * FROM users WHERE id = 2").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 1);
-                assert_eq!(rows[0][0], Value::Integer(2));
-                assert_eq!(rows[0][1], Value::String("Bob".to_string()));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_index_range_queries() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table, populate, and create index
-        executor.execute(parse_sql("CREATE TABLE products (id INTEGER, price INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (1, 100)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (2, 200)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (3, 300)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO products VALUES (4, 400)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE INDEX idx_price ON products(price)").unwrap()).unwrap();
-
-        // Test > operator
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price > 200").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0][1], Value::Integer(300));
-                assert_eq!(rows[1][1], Value::Integer(400));
-            }
-            _ => panic!("Expected Select result"),
-        }
-
-        // Test >= operator
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price >= 200").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 3);
-            }
-            _ => panic!("Expected Select result"),
-        }
-
-        // Test < operator
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price < 300").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-                assert_eq!(rows[0][1], Value::Integer(100));
-                assert_eq!(rows[1][1], Value::Integer(200));
-            }
-            _ => panic!("Expected Select result"),
-        }
-
-        // Test <= operator
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price <= 200").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 2);
-            }
-            _ => panic!("Expected Select result"),
-        }
-
-        // Test != operator
-        let result = executor.execute(parse_sql("SELECT * FROM products WHERE price != 200").unwrap()).unwrap();
-        match result {
-            ExecutionResult::Select { rows, .. } => {
-                assert_eq!(rows.len(), 3);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_multi_column_index_prefix_scan() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE items (a INTEGER, b INTEGER, c INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO items VALUES (1, 10, 100)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO items VALUES (1, 20, 200)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO items VALUES (2, 30, 300)").unwrap()).unwrap();
-
-        executor.execute(parse_sql("CREATE INDEX idx_ab ON items(a, b)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql("SELECT a, b FROM items WHERE a = 1").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { column_names, rows, plan } => {
-                assert_eq!(column_names, vec!["a".to_string(), "b".to_string()]);
-                assert_eq!(rows.len(), 2);
-                assert!(plan.iter().any(|step| step.contains("Index scan")), "plan did not use index: {:?}", plan);
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_multi_column_index_with_and_predicate() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE test (id INTEGER, val INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO test VALUES (1, 2)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO test VALUES (2, 3)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO test VALUES (4, 1)").unwrap()).unwrap();
-
-        executor.execute(parse_sql("CREATE INDEX test_id_val ON test(id, val)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql("SELECT * FROM test WHERE id < 3 AND val < 3").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { rows, plan, .. } => {
-                assert_eq!(rows.len(), 1);
-                assert!(plan.iter().any(|p| p.contains("id < 3 AND val < 3")));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_multi_column_index_prefix_range_plan() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE t (id INTEGER, val INTEGER)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO t VALUES (1, 1)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO t VALUES (5, 5)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE INDEX idx_id_val ON t(id, val)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql("SELECT * FROM t WHERE id < 3").unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { plan, .. } => {
-                assert!(plan.iter().any(|p| p.contains("Index scan")));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_create_index_varchar_fails() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-
-        // Try to create index on VARCHAR column (should fail)
-        let result = executor.execute(parse_sql("CREATE INDEX idx_name ON users(name)").unwrap());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_create_index_duplicate() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        // Create table and index
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE INDEX idx_id ON users(id)").unwrap()).unwrap();
-
-        // Try to create same index again (should fail)
-        let result = executor.execute(parse_sql("CREATE INDEX idx_id2 ON users(id)").unwrap());
-        assert!(result.is_err());
-    }
-
-    #[test]
-    fn test_join_nested_loop() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)").unwrap()).unwrap();
-
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-
-        executor.execute(parse_sql("INSERT INTO orders VALUES (100, 1, 50)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO orders VALUES (101, 2, 20)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql(
-            "SELECT * FROM users JOIN orders ON users.id = orders.user_id",
-        ).unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { column_names, rows, .. } => {
-                assert_eq!(
-                    column_names,
-                    vec![
-                        "users.id".to_string(),
-                        "users.name".to_string(),
-                        "orders.id".to_string(),
-                        "orders.user_id".to_string(),
-                        "orders.amount".to_string(),
-                    ]
-                );
-                assert_eq!(rows.len(), 2);
-                assert!(rows.iter().any(|r| r[0] == Value::Integer(1) && r[2] == Value::Integer(100)));
-                assert!(rows.iter().any(|r| r[0] == Value::Integer(2) && r[2] == Value::Integer(101)));
-            }
-            _ => panic!("Expected Select result"),
-        }
-    }
-
-    #[test]
-    fn test_join_with_index_on_inner() {
-        let temp_dir = TempDir::new().unwrap();
-        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
-
-        executor.execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap()).unwrap();
-        executor.execute(parse_sql("CREATE TABLE orders (id INTEGER, user_id INTEGER, amount INTEGER)").unwrap()).unwrap();
-
-        executor.execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO users VALUES (2, 'Bob')").unwrap()).unwrap();
-
-        executor.execute(parse_sql("INSERT INTO orders VALUES (100, 1, 50)").unwrap()).unwrap();
-        executor.execute(parse_sql("INSERT INTO orders VALUES (101, 2, 20)").unwrap()).unwrap();
-
-        executor.execute(parse_sql("CREATE INDEX idx_orders_user_id ON orders(user_id)").unwrap()).unwrap();
-
-        let result = executor.execute(parse_sql(
-            "SELECT orders.amount, users.name FROM users JOIN orders ON users.id = orders.user_id",
-        ).unwrap()).unwrap();
-
-        match result {
-            ExecutionResult::Select { column_names, rows, .. } => {
-                assert_eq!(column_names, vec!["orders.amount".to_string(), "users.name".to_string()]);
-                assert_eq!(rows.len(), 2);
-                assert!(rows.iter().any(|r| r[0] == Value::Integer(50) && r[1] == Value::String("Alice".to_string())));
-                assert!(rows.iter().any(|r| r[0] == Value::Integer(20) && r[1] == Value::String("Bob".to_string())));
-            }
-            _ => panic!("Expected Select result"),
-        }
     }
 }

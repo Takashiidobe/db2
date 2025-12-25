@@ -1,7 +1,16 @@
 pub mod ast;
-pub mod parser;
 pub mod executor;
+pub mod parser;
+
+#[cfg(test)]
+mod executor_test;
+
+#[cfg(test)]
+mod ast_test;
+
+#[cfg(test)]
+mod parser_test;
 
 pub use ast::{CreateTableStmt, DataType, InsertStmt, Statement};
-pub use parser::{parse_sql, ParseError};
-pub use executor::{Executor, ExecutionResult};
+pub use executor::{ExecutionResult, Executor};
+pub use parser::{ParseError, parse_sql};
