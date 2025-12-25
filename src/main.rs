@@ -15,6 +15,7 @@ fn main() -> io::Result<()> {
     println!("  UPDATE <table> SET <col> = <expr>[, ...] [WHERE <pred>]");
     println!("  DELETE FROM <name> [WHERE <pred>]");
     println!("  SELECT <cols|*> FROM <table> [WHERE <pred>] [JOIN ...]");
+    println!("  .vacuum [table|all] - Vacuum dead row versions");
     println!("  .exit - Exit the program");
     println!();
 
@@ -68,6 +69,17 @@ fn main() -> io::Result<()> {
             println!("Flushing data and exiting...");
             executor.flush_all()?;
             break;
+        }
+
+        if let Some(rest) = input.strip_prefix(".vacuum") {
+            let target = rest.trim();
+            let removed = if target.is_empty() || target.eq_ignore_ascii_case("all") {
+                executor.vacuum_all()?
+            } else {
+                executor.vacuum_table(target)?
+            };
+            println!("Vacuum removed {} row(s).", removed);
+            continue;
         }
 
         match parse_sql_statements(input) {
