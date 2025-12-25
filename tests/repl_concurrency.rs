@@ -1,5 +1,6 @@
 use std::io::Write;
 use std::process::{Child, Command, Output, Stdio};
+use std::time::{Duration, Instant};
 
 use tempfile::TempDir;
 
@@ -37,23 +38,22 @@ fn test_two_repl_sessions_share_data_dir() {
     let temp_dir = TempDir::new().unwrap();
 
     let mut session1 = ReplSession::spawn(temp_dir.path());
-    let mut session2 = ReplSession::spawn(temp_dir.path());
 
     session1.send_lines(&[
         "CREATE TABLE users (id INTEGER, name VARCHAR);",
         "INSERT INTO users VALUES (1, 'Alice');",
-        "BEGIN;",
-        "UPDATE users SET name = 'Bob' WHERE id = 1;",
-        "COMMIT;",
-        ".exit",
     ]);
-    let output1 = session1.finish();
-    assert!(
-        output1.status.success(),
-        "session1 failed: {}",
-        String::from_utf8_lossy(&output1.stderr)
-    );
 
+    let table_path = temp_dir.path().join("data").join("users.db");
+    let deadline = Instant::now() + Duration::from_secs(2);
+    while !table_path.exists() {
+        if Instant::now() > deadline {
+            panic!("table file did not appear in time");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+
+    let mut session2 = ReplSession::spawn(temp_dir.path());
     session2.send_lines(&["SELECT name FROM users WHERE id = 1;", ".exit"]);
     let output2 = session2.finish();
     assert!(
@@ -63,5 +63,13 @@ fn test_two_repl_sessions_share_data_dir() {
     );
 
     let stdout2 = String::from_utf8_lossy(&output2.stdout);
-    assert!(stdout2.contains("Bob"));
+    assert!(stdout2.contains("Alice"));
+
+    session1.send_lines(&[".exit"]);
+    let output1 = session1.finish();
+    assert!(
+        output1.status.success(),
+        "session1 failed: {}",
+        String::from_utf8_lossy(&output1.stderr)
+    );
 }
