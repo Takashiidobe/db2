@@ -267,7 +267,12 @@ impl WalFile {
 
             let len = u32::from_le_bytes(len_buf) as usize;
             let mut data = vec![0u8; len];
-            file.read_exact(&mut data)?;
+            if let Err(err) = file.read_exact(&mut data) {
+                if err.kind() == io::ErrorKind::UnexpectedEof {
+                    break;
+                }
+                return Err(err);
+            }
             let record = WalRecord::deserialize(&data).map_err(to_io_error)?;
             records.push(record);
         }

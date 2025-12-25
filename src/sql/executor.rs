@@ -343,6 +343,7 @@ impl Executor {
             wal: WalFile::new(wal_path),
         };
 
+        executor.recover_from_wal()?;
         executor.load_indexes_from_metadata()?;
 
         Ok(executor)
@@ -2157,5 +2158,153 @@ impl Executor {
             self.wal.append(&WalRecord::Begin { txn_id })?;
             Ok((txn_id, true))
         }
+    }
+
+    fn recover_from_wal(&mut self) -> io::Result<()> {
+        let records = self.wal.read_all()?;
+        if records.is_empty() {
+            return Ok(());
+        }
+
+        let mut committed = HashSet::new();
+        for record in &records {
+            match record {
+                WalRecord::Commit { txn_id } => {
+                    committed.insert(*txn_id);
+                }
+                WalRecord::Rollback { txn_id } => {
+                    committed.remove(txn_id);
+                }
+                _ => {}
+            }
+        }
+
+        let mut mappings: HashMap<TxnId, HashMap<RowId, RowId>> = HashMap::new();
+
+        for record in records {
+            let (txn_id, record) = match record {
+                WalRecord::Begin { txn_id }
+                | WalRecord::Commit { txn_id }
+                | WalRecord::Rollback { txn_id } => (txn_id, None),
+                WalRecord::Insert {
+                    txn_id,
+                    table,
+                    row_id,
+                    values,
+                } => (
+                    txn_id,
+                    Some(WalRecord::Insert {
+                        txn_id,
+                        table,
+                        row_id,
+                        values,
+                    }),
+                ),
+                WalRecord::Update {
+                    txn_id,
+                    table,
+                    row_id,
+                    before,
+                    after,
+                } => (
+                    txn_id,
+                    Some(WalRecord::Update {
+                        txn_id,
+                        table,
+                        row_id,
+                        before,
+                        after,
+                    }),
+                ),
+                WalRecord::Delete {
+                    txn_id,
+                    table,
+                    row_id,
+                    values,
+                } => (
+                    txn_id,
+                    Some(WalRecord::Delete {
+                        txn_id,
+                        table,
+                        row_id,
+                        values,
+                    }),
+                ),
+            };
+
+            if !committed.contains(&txn_id) {
+                continue;
+            }
+
+            let Some(record) = record else {
+                continue;
+            };
+
+            let entry = mappings.entry(txn_id).or_default();
+
+            match record {
+                WalRecord::Insert {
+                    table,
+                    row_id,
+                    values,
+                    ..
+                } => {
+                    let Some(table_ref) = self.tables.get_mut(&table) else {
+                        continue;
+                    };
+                    let resolved = match table_ref.get(row_id) {
+                        Ok(_) => row_id,
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {
+                            table_ref.insert(&values)?
+                        }
+                        Err(err) => return Err(err),
+                    };
+                    entry.insert(row_id, resolved);
+                }
+                WalRecord::Update {
+                    table,
+                    row_id,
+                    after,
+                    ..
+                } => {
+                    let Some(table_ref) = self.tables.get_mut(&table) else {
+                        continue;
+                    };
+                    let resolved = entry.get(&row_id).copied().unwrap_or(row_id);
+                    match table_ref.update(resolved, &after) {
+                        Ok(new_id) => {
+                            entry.insert(row_id, new_id);
+                        }
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                WalRecord::Delete { table, row_id, .. } => {
+                    let Some(table_ref) = self.tables.get_mut(&table) else {
+                        continue;
+                    };
+                    let resolved = entry.get(&row_id).copied().unwrap_or(row_id);
+                    match table_ref.delete(resolved) {
+                        Ok(()) => {
+                            entry.insert(row_id, resolved);
+                        }
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        Ok(())
     }
 }

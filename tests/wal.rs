@@ -137,3 +137,48 @@ fn test_wal_records_from_executor_transactions() {
         _ => panic!("Expected Commit record"),
     }
 }
+
+#[test]
+fn test_wal_recovery_replays_committed_records() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().to_path_buf();
+
+    {
+        let mut executor = Executor::new(&db_path, 10).unwrap();
+        executor
+            .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+            .unwrap();
+    }
+
+    let wal = WalFile::new(db_path.join("wal.log"));
+    let row_id = RowId::new(1, 0);
+    wal.append(&WalRecord::Begin { txn_id: 7 }).unwrap();
+    wal.append(&WalRecord::Insert {
+        txn_id: 7,
+        table: "users".to_string(),
+        row_id,
+        values: vec![Value::Integer(1), Value::String("Alice".to_string())],
+    })
+    .unwrap();
+    wal.append(&WalRecord::Update {
+        txn_id: 7,
+        table: "users".to_string(),
+        row_id,
+        before: vec![Value::Integer(1), Value::String("Alice".to_string())],
+        after: vec![Value::Integer(1), Value::String("Bob".to_string())],
+    })
+    .unwrap();
+    wal.append(&WalRecord::Commit { txn_id: 7 }).unwrap();
+
+    let mut executor = Executor::new(&db_path, 10).unwrap();
+    let result = executor
+        .execute(parse_sql("SELECT * FROM users WHERE id = 1").unwrap())
+        .unwrap();
+    match result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][1], Value::String("Bob".to_string()));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
