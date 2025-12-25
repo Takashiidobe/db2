@@ -1014,4 +1014,25 @@ mod tests {
         let err = executor.execute(parse_sql("COMMIT").unwrap()).unwrap_err();
         assert!(err.to_string().contains("No active transaction"));
     }
+
+    #[test]
+    fn test_rollback_clears_transaction_state() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+        assert!(executor.in_transaction());
+
+        executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+        assert!(!executor.in_transaction());
+    }
+
+    #[test]
+    fn test_rollback_without_transaction_errors() {
+        let temp_dir = TempDir::new().unwrap();
+        let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
+
+        let err = executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap_err();
+        assert!(err.to_string().contains("No active transaction"));
+    }
 }

@@ -669,7 +669,15 @@ impl Executor {
                 }
                 self.in_transaction = false;
             }
-            TransactionCommand::Rollback => {}
+            TransactionCommand::Rollback => {
+                if !self.in_transaction {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "No active transaction to rollback",
+                    ));
+                }
+                self.in_transaction = false;
+            }
         }
 
         Ok(ExecutionResult::Transaction {
