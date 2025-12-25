@@ -1,6 +1,6 @@
 mod tests {
     use crate::sql::ast::{BinaryOp, Expr, FromClause, IndexType, Literal, SelectColumn};
-    use crate::sql::parse_sql;
+    use crate::sql::{parse_sql, parse_sql_statements};
     use crate::sql::parser::{Token, Tokenizer};
     use crate::sql::{DataType, Statement, TransactionCommand};
 
@@ -332,6 +332,29 @@ mod tests {
             Statement::Transaction(txn) => {
                 assert_eq!(txn.command, TransactionCommand::Begin);
             }
+            _ => panic!("Expected Transaction statement"),
+        }
+    }
+
+    #[test]
+    fn test_parse_multiple_statements() {
+        let stmts = parse_sql_statements("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);")
+            .unwrap();
+        assert_eq!(stmts.len(), 2);
+        assert!(matches!(stmts[0], Statement::CreateTable(_)));
+        assert!(matches!(stmts[1], Statement::Insert(_)));
+    }
+
+    #[test]
+    fn test_parse_multiple_statements_with_extra_semicolons() {
+        let stmts = parse_sql_statements("BEGIN;;COMMIT;").unwrap();
+        assert_eq!(stmts.len(), 2);
+        match &stmts[0] {
+            Statement::Transaction(txn) => assert_eq!(txn.command, TransactionCommand::Begin),
+            _ => panic!("Expected Transaction statement"),
+        }
+        match &stmts[1] {
+            Statement::Transaction(txn) => assert_eq!(txn.command, TransactionCommand::Commit),
             _ => panic!("Expected Transaction statement"),
         }
     }

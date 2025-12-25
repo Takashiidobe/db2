@@ -1219,3 +1219,30 @@ pub fn parse_sql(sql: &str) -> Result<Statement, ParseError> {
     }
     Ok(stmt)
 }
+
+/// Parse SQL input into multiple statements separated by semicolons.
+pub fn parse_sql_statements(sql: &str) -> Result<Vec<Statement>, ParseError> {
+    let mut tokenizer = Tokenizer::new(sql);
+    let tokens = tokenizer.tokenize()?;
+    let mut parser = Parser::new(tokens);
+    let mut statements = Vec::new();
+
+    loop {
+        while matches!(parser.current(), Token::Semicolon) {
+            parser.advance();
+        }
+
+        if matches!(parser.current(), Token::Eof) {
+            break;
+        }
+
+        let stmt = parser.parse_statement()?;
+        statements.push(stmt);
+
+        while matches!(parser.current(), Token::Semicolon) {
+            parser.advance();
+        }
+    }
+
+    Ok(statements)
+}

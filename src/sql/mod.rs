@@ -16,4 +16,4 @@ pub use ast::{
     Statement, TransactionCommand, TransactionStmt, UpdateStmt,
 };
 pub use executor::{ExecutionResult, Executor};
-pub use parser::{ParseError, parse_sql};
+pub use parser::{ParseError, parse_sql, parse_sql_statements};
