@@ -9,6 +9,7 @@ use crate::optimizer::planner::{
 };
 use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
+use crate::wal::{WalFile, WalRecord, TxnId};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -297,6 +298,12 @@ pub struct Executor {
     indexes: Vec<IndexEntry>,
     /// Transaction state (syntax-only for now).
     in_transaction: bool,
+    /// Active transaction identifier (when in_transaction).
+    current_txn_id: Option<TxnId>,
+    /// Next transaction identifier to allocate.
+    next_txn_id: TxnId,
+    /// Write-ahead log handle.
+    wal: WalFile,
 }
 
 impl Executor {
@@ -324,12 +331,16 @@ impl Executor {
             }
         }
 
+        let wal_path = db_path.join("wal.log");
         let mut executor = Self {
             db_path,
             buffer_pool_size,
             tables,
             indexes: Vec::new(),
             in_transaction: false,
+            current_txn_id: None,
+            next_txn_id: 1,
+            wal: WalFile::new(wal_path),
         };
 
         executor.load_indexes_from_metadata()?;
@@ -461,7 +472,7 @@ impl Executor {
         };
 
         // Collect target rows
-        let rows_to_delete: Vec<RowId> = {
+        let rows_to_delete: Vec<(RowId, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
@@ -485,7 +496,7 @@ impl Executor {
                         continue;
                     }
 
-                    matches.push(row_id);
+                    matches.push((row_id, row));
                 }
             } else {
                 let mut scan = TableScan::new(table);
@@ -495,7 +506,7 @@ impl Executor {
                     {
                         continue;
                     }
-                    matches.push(row_id);
+                    matches.push((row_id, row));
                 }
             }
 
@@ -504,6 +515,12 @@ impl Executor {
 
         // Apply deletions
         let mut rows_deleted = 0;
+        let wal_context = if rows_to_delete.is_empty() {
+            None
+        } else {
+            Some(self.wal_txn_for_mutation()?)
+        };
+        let mut wal_records = Vec::new();
         {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
@@ -512,18 +529,38 @@ impl Executor {
                 )
             })?;
 
-            for row_id in rows_to_delete {
+            for (row_id, row) in rows_to_delete {
                 match table.delete(row_id) {
-                    Ok(()) => rows_deleted += 1,
+                    Ok(()) => {
+                        rows_deleted += 1;
+                        if let Some((txn_id, _)) = wal_context {
+                            wal_records.push(WalRecord::Delete {
+                                txn_id,
+                                table: table_name.clone(),
+                                row_id,
+                                values: row,
+                            });
+                        }
+                    }
                     Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                     Err(e) => return Err(e),
                 }
             }
         }
 
+        for record in wal_records {
+            self.wal.append(&record)?;
+        }
+
         // Rebuild indexes to drop stale entries
         if rows_deleted > 0 {
             self.rebuild_indexes_for_table(&table_name)?;
+        }
+
+        if let Some((txn_id, implicit)) = wal_context {
+            if implicit {
+                self.wal.append(&WalRecord::Commit { txn_id })?;
+            }
         }
 
         Ok(ExecutionResult::Delete { rows_deleted })
@@ -590,7 +627,7 @@ impl Executor {
         };
 
         let mut rows_updated = 0;
-        {
+        let pending_updates: Vec<(RowId, Vec<Value>, Vec<Value>)> = {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::NotFound,
@@ -598,7 +635,7 @@ impl Executor {
                 )
             })?;
 
-            let mut pending_updates: Vec<(RowId, Vec<Value>)> = Vec::new();
+            let mut pending = Vec::new();
 
             if let Some(row_ids) = row_ids {
                 for row_id in row_ids {
@@ -616,7 +653,7 @@ impl Executor {
 
                     let new_row =
                         Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
-                    pending_updates.push((row_id, new_row));
+                    pending.push((row_id, row, new_row));
                 }
             } else {
                 let mut scan = TableScan::new(table);
@@ -629,16 +666,54 @@ impl Executor {
 
                     let new_row =
                         Self::apply_assignments(&row, &assignments, &schema, &columns_meta)?;
-                    pending_updates.push((row_id, new_row));
+                    pending.push((row_id, row, new_row));
                 }
             }
 
-            for (row_id, new_row) in pending_updates {
+            pending
+        };
+
+        let wal_context = if pending_updates.is_empty() {
+            None
+        } else {
+            Some(self.wal_txn_for_mutation()?)
+        };
+        let mut wal_records = Vec::new();
+        {
+            let table = self.tables.get_mut(&table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", table_name),
+                )
+            })?;
+
+            for (row_id, before_row, new_row) in pending_updates {
                 match table.update(row_id, &new_row) {
-                    Ok(_) => rows_updated += 1,
+                    Ok(_) => {
+                        rows_updated += 1;
+                        if let Some((txn_id, _)) = wal_context {
+                            wal_records.push(WalRecord::Update {
+                                txn_id,
+                                table: table_name.clone(),
+                                row_id,
+                                before: before_row,
+                                after: new_row,
+                            });
+                        }
+                    }
                     Err(e) if e.kind() == io::ErrorKind::NotFound => continue,
                     Err(e) => return Err(e),
                 }
+            }
+        }
+
+        for record in wal_records {
+            self.wal.append(&record)?;
+        }
+
+        if let Some((txn_id, implicit)) = wal_context {
+            if implicit {
+                self.wal.append(&WalRecord::Commit { txn_id })?;
             }
         }
 
@@ -658,7 +733,10 @@ impl Executor {
                         "Transaction already in progress",
                     ));
                 }
+                let txn_id = self.allocate_txn_id();
+                self.wal.append(&WalRecord::Begin { txn_id })?;
                 self.in_transaction = true;
+                self.current_txn_id = Some(txn_id);
             }
             TransactionCommand::Commit => {
                 if !self.in_transaction {
@@ -667,7 +745,12 @@ impl Executor {
                         "No active transaction to commit",
                     ));
                 }
+                let txn_id = self
+                    .current_txn_id
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
+                self.wal.append(&WalRecord::Commit { txn_id })?;
                 self.in_transaction = false;
+                self.current_txn_id = None;
             }
             TransactionCommand::Rollback => {
                 if !self.in_transaction {
@@ -676,7 +759,12 @@ impl Executor {
                         "No active transaction to rollback",
                     ));
                 }
+                let txn_id = self
+                    .current_txn_id
+                    .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
+                self.wal.append(&WalRecord::Rollback { txn_id })?;
                 self.in_transaction = false;
+                self.current_txn_id = None;
             }
         }
 
@@ -687,43 +775,75 @@ impl Executor {
 
     /// Execute INSERT statement
     fn execute_insert(&mut self, stmt: InsertStmt) -> io::Result<ExecutionResult> {
-        // Get the table
-        let table = self.tables.get_mut(&stmt.table_name).ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                format!("Table '{}' does not exist", stmt.table_name),
-            )
-        })?;
-
         let mut row_ids = Vec::new();
 
-        for row_values in stmt.values {
-            if row_values.len() != table.schema().column_count() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidInput,
-                    "Row does not match table schema",
-                ));
+        let has_values = !stmt.values.is_empty();
+        let wal_context = if has_values {
+            Some(self.wal_txn_for_mutation()?)
+        } else {
+            None
+        };
+        let mut wal_records = Vec::new();
+
+        {
+            // Get the table
+            let table = self.tables.get_mut(&stmt.table_name).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Table '{}' does not exist", stmt.table_name),
+                )
+            })?;
+
+            for row_values in stmt.values {
+                if row_values.len() != table.schema().column_count() {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        "Row does not match table schema",
+                    ));
+                }
+
+                let values: Vec<Value> = row_values
+                    .iter()
+                    .zip(table.schema().columns())
+                    .map(|(lit, col)| Self::literal_to_typed_value(lit, col.data_type()))
+                    .collect::<io::Result<_>>()?;
+
+                let row_id = table.insert(&values)?;
+
+                for index in self
+                    .indexes
+                    .iter_mut()
+                    .filter(|idx| idx.key.table == stmt.table_name)
+                {
+                    let key = Self::build_composite_key(
+                        &values,
+                        &index.column_indices,
+                        &index.column_types,
+                    )?;
+                    index.insert(key, row_id);
+                }
+
+                if let Some((txn_id, _)) = wal_context {
+                    wal_records.push(WalRecord::Insert {
+                        txn_id,
+                        table: stmt.table_name.clone(),
+                        row_id,
+                        values,
+                    });
+                }
+
+                row_ids.push(row_id);
             }
+        }
 
-            let values: Vec<Value> = row_values
-                .iter()
-                .zip(table.schema().columns())
-                .map(|(lit, col)| Self::literal_to_typed_value(lit, col.data_type()))
-                .collect::<io::Result<_>>()?;
+        for record in wal_records {
+            self.wal.append(&record)?;
+        }
 
-            let row_id = table.insert(&values)?;
-
-            for index in self
-                .indexes
-                .iter_mut()
-                .filter(|idx| idx.key.table == stmt.table_name)
-            {
-                let key =
-                    Self::build_composite_key(&values, &index.column_indices, &index.column_types)?;
-                index.insert(key, row_id);
+        if let Some((txn_id, implicit)) = wal_context {
+            if implicit {
+                self.wal.append(&WalRecord::Commit { txn_id })?;
             }
-
-            row_ids.push(row_id);
         }
 
         Ok(ExecutionResult::Insert { row_ids })
@@ -2018,5 +2138,24 @@ impl Executor {
                 )
             })
             .collect()
+    }
+
+    fn allocate_txn_id(&mut self) -> TxnId {
+        let txn_id = self.next_txn_id;
+        self.next_txn_id = self.next_txn_id.saturating_add(1);
+        txn_id
+    }
+
+    fn wal_txn_for_mutation(&mut self) -> io::Result<(TxnId, bool)> {
+        if self.in_transaction {
+            let txn_id = self
+                .current_txn_id
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
+            Ok((txn_id, false))
+        } else {
+            let txn_id = self.allocate_txn_id();
+            self.wal.append(&WalRecord::Begin { txn_id })?;
+            Ok((txn_id, true))
+        }
     }
 }
