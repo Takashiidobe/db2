@@ -304,6 +304,8 @@ pub struct Executor {
     next_txn_id: TxnId,
     /// Write-ahead log handle.
     wal: WalFile,
+    /// In-memory log for undo on rollback.
+    txn_log: Vec<WalRecord>,
 }
 
 impl Executor {
@@ -341,6 +343,7 @@ impl Executor {
             current_txn_id: None,
             next_txn_id: 1,
             wal: WalFile::new(wal_path),
+            txn_log: Vec::new(),
         };
 
         executor.recover_from_wal()?;
@@ -521,6 +524,7 @@ impl Executor {
         } else {
             Some(self.wal_txn_for_mutation()?)
         };
+        let track_txn = wal_context.as_ref().is_some_and(|(_, implicit)| !*implicit);
         let mut wal_records = Vec::new();
         {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
@@ -551,6 +555,9 @@ impl Executor {
 
         for record in wal_records {
             self.wal.append(&record)?;
+            if track_txn {
+                self.txn_log.push(record);
+            }
         }
 
         // Rebuild indexes to drop stale entries
@@ -679,6 +686,7 @@ impl Executor {
         } else {
             Some(self.wal_txn_for_mutation()?)
         };
+        let track_txn = wal_context.as_ref().is_some_and(|(_, implicit)| !*implicit);
         let mut wal_records = Vec::new();
         {
             let table = self.tables.get_mut(&table_name).ok_or_else(|| {
@@ -710,6 +718,9 @@ impl Executor {
 
         for record in wal_records {
             self.wal.append(&record)?;
+            if track_txn {
+                self.txn_log.push(record);
+            }
         }
 
         if let Some((txn_id, implicit)) = wal_context {
@@ -738,6 +749,7 @@ impl Executor {
                 self.wal.append(&WalRecord::Begin { txn_id })?;
                 self.in_transaction = true;
                 self.current_txn_id = Some(txn_id);
+                self.txn_log.clear();
             }
             TransactionCommand::Commit => {
                 if !self.in_transaction {
@@ -752,6 +764,7 @@ impl Executor {
                 self.wal.append(&WalRecord::Commit { txn_id })?;
                 self.in_transaction = false;
                 self.current_txn_id = None;
+                self.txn_log.clear();
             }
             TransactionCommand::Rollback => {
                 if !self.in_transaction {
@@ -763,9 +776,11 @@ impl Executor {
                 let txn_id = self
                     .current_txn_id
                     .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "Missing txn id"))?;
+                self.undo_transaction()?;
                 self.wal.append(&WalRecord::Rollback { txn_id })?;
                 self.in_transaction = false;
                 self.current_txn_id = None;
+                self.txn_log.clear();
             }
         }
 
@@ -784,6 +799,7 @@ impl Executor {
         } else {
             None
         };
+        let track_txn = wal_context.as_ref().is_some_and(|(_, implicit)| !*implicit);
         let mut wal_records = Vec::new();
 
         {
@@ -839,6 +855,9 @@ impl Executor {
 
         for record in wal_records {
             self.wal.append(&record)?;
+            if track_txn {
+                self.txn_log.push(record);
+            }
         }
 
         if let Some((txn_id, implicit)) = wal_context {
@@ -2158,6 +2177,84 @@ impl Executor {
             self.wal.append(&WalRecord::Begin { txn_id })?;
             Ok((txn_id, true))
         }
+    }
+
+    fn undo_transaction(&mut self) -> io::Result<()> {
+        let mut row_map: HashMap<RowId, RowId> = HashMap::new();
+        let mut affected_tables: HashSet<String> = HashSet::new();
+
+        for record in self.txn_log.iter().rev() {
+            match record {
+                WalRecord::Insert {
+                    table, row_id, ..
+                } => {
+                    let Some(table_ref) = self.tables.get_mut(table) else {
+                        continue;
+                    };
+                    let resolved = row_map.get(row_id).copied().unwrap_or(*row_id);
+                    match table_ref.delete(resolved) {
+                        Ok(()) => {
+                            affected_tables.insert(table.clone());
+                            row_map.insert(*row_id, resolved);
+                        }
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                WalRecord::Update {
+                    table,
+                    row_id,
+                    before,
+                    ..
+                } => {
+                    let Some(table_ref) = self.tables.get_mut(table) else {
+                        continue;
+                    };
+                    let resolved = row_map.get(row_id).copied().unwrap_or(*row_id);
+                    match table_ref.update(resolved, before) {
+                        Ok(new_id) => {
+                            affected_tables.insert(table.clone());
+                            row_map.insert(*row_id, new_id);
+                        }
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {}
+                        Err(err) => return Err(err),
+                    }
+                }
+                WalRecord::Delete {
+                    table, row_id, values, ..
+                } => {
+                    let Some(table_ref) = self.tables.get_mut(table) else {
+                        continue;
+                    };
+                    let resolved = row_map.get(row_id).copied().unwrap_or(*row_id);
+                    match table_ref.get(resolved) {
+                        Ok(_) => {}
+                        Err(err)
+                            if err.kind() == io::ErrorKind::NotFound
+                                || err.kind() == io::ErrorKind::UnexpectedEof =>
+                        {
+                            let new_id = table_ref.insert(values)?;
+                            affected_tables.insert(table.clone());
+                            row_map.insert(*row_id, new_id);
+                        }
+                        Err(err) => return Err(err),
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        for table in affected_tables {
+            self.rebuild_indexes_for_table(&table)?;
+        }
+
+        Ok(())
     }
 
     fn recover_from_wal(&mut self) -> io::Result<()> {

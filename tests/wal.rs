@@ -182,3 +182,51 @@ fn test_wal_recovery_replays_committed_records() {
         other => panic!("Expected Select result, got: {:?}", other),
     }
 }
+
+#[test]
+fn test_rollback_undoes_mutations() {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path().to_path_buf();
+    let mut executor = Executor::new(&db_path, 10).unwrap();
+
+    executor
+        .execute(parse_sql("CREATE TABLE users (id INTEGER, name VARCHAR)").unwrap())
+        .unwrap();
+    executor
+        .execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap())
+        .unwrap();
+
+    executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
+    executor
+        .execute(parse_sql("UPDATE users SET name = 'Bob' WHERE id = 1").unwrap())
+        .unwrap();
+    executor
+        .execute(parse_sql("INSERT INTO users VALUES (2, 'Carol')").unwrap())
+        .unwrap();
+    executor
+        .execute(parse_sql("DELETE FROM users WHERE id = 1").unwrap())
+        .unwrap();
+    executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
+
+    let result = executor
+        .execute(parse_sql("SELECT * FROM users WHERE id = 1").unwrap())
+        .unwrap();
+    match result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0][0], Value::Integer(1));
+            assert_eq!(rows[0][1], Value::String("Alice".to_string()));
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+
+    let result = executor
+        .execute(parse_sql("SELECT * FROM users WHERE id = 2").unwrap())
+        .unwrap();
+    match result {
+        ExecutionResult::Select { rows, .. } => {
+            assert!(rows.is_empty());
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
