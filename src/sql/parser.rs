@@ -801,6 +801,13 @@ impl Parser {
 
     fn parse_create_index(&mut self) -> Result<CreateIndexStmt, ParseError> {
         self.expect(Token::Create)?;
+
+        // Check for UNIQUE keyword
+        let is_unique = matches!(self.current(), Token::Unique);
+        if is_unique {
+            self.advance();
+        }
+
         self.expect(Token::Index)?;
 
         let index_name = match self.current() {
@@ -876,8 +883,12 @@ impl Parser {
 
         self.expect(Token::RightParen)?;
 
-        Ok(CreateIndexStmt::with_type(
-            index_name, table_name, columns, index_type,
+        Ok(CreateIndexStmt::with_unique(
+            index_name,
+            table_name,
+            columns,
+            index_type,
+            is_unique,
         ))
     }
 
@@ -1640,7 +1651,7 @@ impl Parser {
     fn parse_statement(&mut self) -> Result<Statement, ParseError> {
         match self.current() {
             Token::Create => {
-                // Peek at next token to determine if it's TABLE or INDEX
+                // Peek at next token to determine if it's TABLE, INDEX, or UNIQUE INDEX
                 self.advance();
                 match self.current() {
                     Token::Table => {
@@ -1654,6 +1665,22 @@ impl Parser {
                         self.position -= 1;
                         let stmt = self.parse_create_index()?;
                         Ok(Statement::CreateIndex(stmt))
+                    }
+                    Token::Unique => {
+                        // Could be CREATE UNIQUE INDEX
+                        // Peek one more token
+                        self.advance();
+                        if matches!(self.current(), Token::Index) {
+                            // Rewind to CREATE
+                            self.position -= 2;
+                            let stmt = self.parse_create_index()?;
+                            Ok(Statement::CreateIndex(stmt))
+                        } else {
+                            Err(ParseError::UnexpectedToken {
+                                expected: "INDEX after UNIQUE".to_string(),
+                                found: format!("{}", self.current()),
+                            })
+                        }
                     }
                     token => Err(ParseError::UnexpectedToken {
                         expected: "TABLE or INDEX".to_string(),

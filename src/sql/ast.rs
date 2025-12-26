@@ -359,6 +359,7 @@ pub struct CreateIndexStmt {
     pub table_name: String,
     pub columns: Vec<String>,
     pub index_type: IndexType,
+    pub is_unique: bool,
 }
 
 impl CreateIndexStmt {
@@ -372,6 +373,7 @@ impl CreateIndexStmt {
             table_name: table_name.into(),
             columns,
             index_type: IndexType::default(),
+            is_unique: false,
         }
     }
 
@@ -386,6 +388,23 @@ impl CreateIndexStmt {
             table_name: table_name.into(),
             columns,
             index_type,
+            is_unique: false,
+        }
+    }
+
+    pub fn with_unique(
+        index_name: impl Into<String>,
+        table_name: impl Into<String>,
+        columns: Vec<String>,
+        index_type: IndexType,
+        is_unique: bool,
+    ) -> Self {
+        Self {
+            index_name: index_name.into(),
+            table_name: table_name.into(),
+            columns,
+            index_type,
+            is_unique,
         }
     }
 }

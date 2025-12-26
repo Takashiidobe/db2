@@ -16,11 +16,13 @@ fn test_create_index_simple() {
             table_name,
             columns,
             index_type,
+            is_unique,
         } => {
             assert_eq!(index_name, "idx_user_id");
             assert_eq!(table_name, "users");
             assert_eq!(columns, vec!["id"]);
             assert_eq!(index_type, IndexType::BTree);
+            assert_eq!(is_unique, false);
         }
         other => panic!("Expected CreateIndex result, got: {:?}", other),
     }
@@ -41,8 +43,13 @@ fn test_create_hash_index() {
     let result = db.execute_ok("CREATE INDEX idx_user_id_hash ON users USING HASH (id)");
 
     match result {
-        ExecutionResult::CreateIndex { index_type, .. } => {
+        ExecutionResult::CreateIndex {
+            index_type,
+            is_unique,
+            ..
+        } => {
             assert_eq!(index_type, IndexType::Hash);
+            assert_eq!(is_unique, false);
         }
         other => panic!("Expected CreateIndex result, got: {:?}", other),
     }
@@ -199,5 +206,156 @@ fn test_create_index_populates_existing_data() {
             assert!(plan.iter().any(|p| p.contains("Index scan")));
         }
         other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_unique_index() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    let result = db.execute_ok("CREATE UNIQUE INDEX idx_user_id ON users(id)");
+
+    match result {
+        ExecutionResult::CreateIndex {
+            index_name,
+            table_name,
+            columns,
+            index_type,
+            is_unique,
+        } => {
+            assert_eq!(index_name, "idx_user_id");
+            assert_eq!(table_name, "users");
+            assert_eq!(columns, vec!["id"]);
+            assert_eq!(index_type, IndexType::BTree);
+            assert_eq!(is_unique, true);
+        }
+        other => panic!("Expected CreateIndex result, got: {:?}", other),
+    }
+
+    let indexes = db.list_indexes();
+    assert_eq!(indexes.len(), 1);
+    assert_eq!(indexes[0].0, "idx_user_id");
+    assert_eq!(indexes[0].4, true); // is_unique should be true
+}
+
+#[test]
+fn test_create_unique_hash_index() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    let result = db.execute_ok("CREATE UNIQUE INDEX idx_id_hash ON users USING HASH (id)");
+
+    match result {
+        ExecutionResult::CreateIndex {
+            index_type,
+            is_unique,
+            ..
+        } => {
+            assert_eq!(index_type, IndexType::Hash);
+            assert_eq!(is_unique, true);
+        }
+        other => panic!("Expected CreateIndex result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_create_unique_index_with_duplicates_fails() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice')");
+    db.execute_ok("INSERT INTO users VALUES (2, 'Bob')");
+    db.execute_ok("INSERT INTO users VALUES (1, 'Charlie')"); // Duplicate id
+
+    let err = db.execute_err("CREATE UNIQUE INDEX idx_id ON users(id)");
+    assert!(err.to_string().contains("duplicate"));
+}
+
+#[test]
+fn test_insert_duplicate_with_unique_index_fails() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("CREATE UNIQUE INDEX idx_id ON users(id)");
+
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice')");
+    db.execute_ok("INSERT INTO users VALUES (2, 'Bob')");
+
+    let err = db.execute_err("INSERT INTO users VALUES (1, 'Charlie')");
+    assert!(err.to_string().contains("Unique constraint violation"));
+}
+
+#[test]
+fn test_update_duplicate_with_unique_index_fails() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("CREATE UNIQUE INDEX idx_id ON users(id)");
+
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice')");
+    db.execute_ok("INSERT INTO users VALUES (2, 'Bob')");
+
+    let err = db.execute_err("UPDATE users SET id = 1 WHERE id = 2");
+    assert!(err.to_string().contains("Unique constraint violation"));
+}
+
+#[test]
+fn test_unique_index_allows_unique_values() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE users (id INTEGER, name VARCHAR)");
+    db.execute_ok("CREATE UNIQUE INDEX idx_id ON users(id)");
+
+    db.execute_ok("INSERT INTO users VALUES (1, 'Alice')");
+    db.execute_ok("INSERT INTO users VALUES (2, 'Bob')");
+    db.execute_ok("INSERT INTO users VALUES (3, 'Charlie')");
+
+    let result = db.execute_ok("SELECT * FROM users");
+    match &result {
+        ExecutionResult::Select { rows, .. } => {
+            assert_eq!(rows.len(), 3);
+        }
+        other => panic!("Expected Select result, got: {:?}", other),
+    }
+}
+
+#[test]
+fn test_unique_index_composite() {
+    let mut db = TestDb::new().unwrap();
+
+    db.execute_ok("CREATE TABLE orders (user_id INTEGER, order_id INTEGER, amount INTEGER)");
+    db.execute_ok("CREATE UNIQUE INDEX idx_user_order ON orders(user_id, order_id)");
+
+    db.execute_ok("INSERT INTO orders VALUES (1, 100, 50)");
+    db.execute_ok("INSERT INTO orders VALUES (1, 101, 60)");
+    db.execute_ok("INSERT INTO orders VALUES (2, 100, 70)");
+
+    // This should fail because (1, 100) already exists
+    let err = db.execute_err("INSERT INTO orders VALUES (1, 100, 80)");
+    assert!(err.to_string().contains("Unique constraint violation"));
+}
+
+#[test]
+fn test_unique_index_persistence() {
+    let temp_dir = tempfile::TempDir::new().unwrap();
+    let db_path = temp_dir.path().to_path_buf();
+
+    {
+        let mut executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE TABLE users (id INTEGER, age INTEGER)").unwrap();
+        executor.execute(stmt).unwrap();
+        let stmt = db2::sql::parse_sql("CREATE UNIQUE INDEX idx_id ON users(id)").unwrap();
+        executor.execute(stmt).unwrap();
+        executor.flush_all().unwrap();
+    }
+
+    {
+        let executor = db2::sql::Executor::new(&db_path, 100).unwrap();
+        let indexes = executor.list_indexes();
+        assert_eq!(indexes.len(), 1);
+        assert_eq!(indexes[0].0, "idx_id");
+        assert_eq!(indexes[0].3, IndexType::BTree);
+        assert_eq!(indexes[0].4, true); // is_unique should be true
     }
 }

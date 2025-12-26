@@ -42,6 +42,7 @@ pub enum ExecutionResult {
         table_name: String,
         columns: Vec<String>,
         index_type: IndexType,
+        is_unique: bool,
     },
     /// Index dropped successfully
     DropIndex { index_name: String },
@@ -109,10 +110,13 @@ impl std::fmt::Display for ExecutionResult {
                 table_name,
                 columns,
                 index_type,
+                is_unique,
             } => {
+                let unique_str = if *is_unique { "UNIQUE " } else { "" };
                 write!(
                     f,
-                    "Index '{}' ({}) created on {}({})",
+                    "{}Index '{}' ({}) created on {}({})",
+                    unique_str,
                     index_name,
                     index_type,
                     table_name,
@@ -158,6 +162,7 @@ struct IndexEntry {
     column_indices: Vec<usize>,
     column_types: Vec<DbDataType>,
     index_type: IndexType,
+    is_unique: bool,
     data: IndexData,
 }
 
@@ -1446,6 +1451,18 @@ impl Executor {
                         &index.column_indices,
                         &index.column_types,
                     )?;
+
+                    // Check uniqueness constraint for unique indexes
+                    if index.is_unique && !index.lookup_eq(&key).is_empty() {
+                        return Err(io::Error::new(
+                            io::ErrorKind::InvalidInput,
+                            format!(
+                                "Unique constraint violation on index '{}': duplicate key value",
+                                index.name
+                            ),
+                        ));
+                    }
+
                     index.insert(key, row_id);
                 }
 
@@ -1556,9 +1573,22 @@ impl Executor {
         };
 
         // Scan the table and add all existing rows to the index
+        let mut seen_keys = std::collections::HashSet::new();
         let mut scan = TableScan::new(table);
         while let Some((row_id, row)) = scan.next()? {
             let key = Self::build_composite_key(&row, &column_indices, &column_types)?;
+
+            // If this is a unique index, check for duplicates
+            if stmt.is_unique && !seen_keys.insert(key.clone()) {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidInput,
+                    format!(
+                        "Cannot create unique index: duplicate values found in columns ({})",
+                        stmt.columns.join(", ")
+                    ),
+                ));
+            }
+
             match &mut data {
                 IndexData::BTree(tree) => tree.insert(key, row_id),
                 IndexData::Hash(index) => index.insert(key, row_id),
@@ -1574,6 +1604,7 @@ impl Executor {
             column_indices,
             column_types,
             index_type: stmt.index_type,
+            is_unique: stmt.is_unique,
             data,
         };
 
@@ -1581,10 +1612,11 @@ impl Executor {
         self.persist_index_metadata()?;
 
         Ok(ExecutionResult::CreateIndex {
-            index_name: stmt.index_name,
+            index_name: stmt.index_name.clone(),
             table_name: stmt.table_name,
             columns: stmt.columns,
             index_type: stmt.index_type,
+            is_unique: stmt.is_unique,
         })
     }
 
@@ -2614,9 +2646,22 @@ impl Executor {
                 IndexType::Hash => IndexData::Hash(HashIndex::new()),
             };
 
+            let mut seen_keys = std::collections::HashSet::new();
             for (row_id, row) in &rows {
                 let key =
                     Self::build_composite_key(row, &index.column_indices, &index.column_types)?;
+
+                // Check uniqueness constraint for unique indexes
+                if index.is_unique && !seen_keys.insert(key.clone()) {
+                    return Err(io::Error::new(
+                        io::ErrorKind::InvalidInput,
+                        format!(
+                            "Unique constraint violation on index '{}': duplicate key value",
+                            index.name
+                        ),
+                    ));
+                }
+
                 match &mut data {
                     IndexData::BTree(tree) => tree.insert(key, *row_id),
                     IndexData::Hash(hash) => hash.insert(key, *row_id),
@@ -3508,10 +3553,11 @@ impl Executor {
         let mut buf = String::new();
         for idx in &self.indexes {
             buf.push_str(&format!(
-                "{}|{}|{}|{}\n",
+                "{}|{}|{}|{}|{}\n",
                 idx.name,
                 idx.key.table,
                 idx.index_type,
+                idx.is_unique,
                 idx.key.columns.join(",")
             ));
         }
@@ -3562,11 +3608,18 @@ impl Executor {
                 continue;
             }
 
-            let (name, table, index_type, cols_str) = if parts.len() >= 4 {
+            let (name, table, index_type, is_unique, cols_str) = if parts.len() >= 5 {
+                // New format: name|table|index_type|is_unique|columns
                 let parsed_type = IndexType::from_str(parts[2]).unwrap_or(IndexType::BTree);
-                (parts[0], parts[1], parsed_type, parts[3])
+                let unique = parts[3] == "true" || parts[3] == "1";
+                (parts[0], parts[1], parsed_type, unique, parts[4])
+            } else if parts.len() >= 4 {
+                // Old format: name|table|index_type|columns
+                let parsed_type = IndexType::from_str(parts[2]).unwrap_or(IndexType::BTree);
+                (parts[0], parts[1], parsed_type, false, parts[3])
             } else {
-                (parts[0], parts[1], IndexType::BTree, parts[2])
+                // Legacy format: name|table|columns
+                (parts[0], parts[1], IndexType::BTree, false, parts[2])
             };
 
             let columns: Vec<String> = cols_str
@@ -3630,6 +3683,7 @@ impl Executor {
                 column_indices,
                 column_types,
                 index_type,
+                is_unique,
                 data,
             });
         }
@@ -4384,7 +4438,7 @@ impl Executor {
     }
 
     /// Return index metadata currently loaded.
-    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType)> {
+    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType, bool)> {
         self.indexes
             .iter()
             .map(|idx| {
@@ -4393,6 +4447,7 @@ impl Executor {
                     idx.key.table.clone(),
                     idx.key.columns.clone(),
                     idx.index_type,
+                    idx.is_unique,
                 )
             })
             .collect()

@@ -50,7 +50,7 @@ impl TestDb {
     }
 
     /// List all indexes
-    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType)> {
+    pub fn list_indexes(&self) -> Vec<(String, String, Vec<String>, IndexType, bool)> {
         self.executor.list_indexes()
     }
 

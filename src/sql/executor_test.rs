@@ -511,11 +511,13 @@ mod tests {
                 table_name,
                 columns,
                 index_type,
+                is_unique,
             } => {
                 assert_eq!(index_name, "idx_id");
                 assert_eq!(table_name, "users");
                 assert_eq!(columns, vec!["id".to_string()]);
                 assert_eq!(index_type, IndexType::BTree);
+                assert_eq!(is_unique, false);
             }
             _ => panic!("Expected CreateIndex result"),
         }

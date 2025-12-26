@@ -118,7 +118,7 @@ fn test_alter_table_rename_table() {
     assert!(!tables.iter().any(|(name, _)| name == "users"));
 
     let indexes = db.list_indexes();
-    assert!(indexes.iter().any(|(name, table, cols, _)| {
+    assert!(indexes.iter().any(|(name, table, cols, _, _)| {
         name == "idx_users_id" && table == "customers" && cols == &vec!["id".to_string()]
     }));
 

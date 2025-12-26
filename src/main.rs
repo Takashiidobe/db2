@@ -41,9 +41,11 @@ fn main() -> io::Result<()> {
         println!("Indexes: (none loaded)");
     } else {
         println!("Indexes:");
-        for (name, table, cols, index_type) in indexes {
+        for (name, table, cols, index_type, is_unique) in indexes {
+            let unique_str = if is_unique { "UNIQUE " } else { "" };
             println!(
-                "  - {} ({}) on {}({})",
+                "  - {}{} ({}) on {}({})",
+                unique_str,
                 name,
                 index_type,
                 table,
