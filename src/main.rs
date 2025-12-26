@@ -7,7 +7,7 @@ fn main() -> io::Result<()> {
     println!("Commands:");
     println!("  CREATE TABLE <name> (<col1> <type>, <col2> <type>, ...)");
     println!("  DROP TABLE <name>");
-    println!("  CREATE INDEX <idx_name> ON <table>(<column>) [USING HASH]");
+    println!("  CREATE [UNIQUE] INDEX <idx_name> ON <table>(<column>) [USING HASH]");
     println!("  BEGIN [TRANSACTION]");
     println!("  COMMIT [TRANSACTION]");
     println!("  ROLLBACK [TRANSACTION]");
