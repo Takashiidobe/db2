@@ -884,11 +884,7 @@ impl Parser {
         self.expect(Token::RightParen)?;
 
         Ok(CreateIndexStmt::with_unique(
-            index_name,
-            table_name,
-            columns,
-            index_type,
-            is_unique,
+            index_name, table_name, columns, index_type, is_unique,
         ))
     }
 
@@ -1637,9 +1633,9 @@ impl Parser {
                         label
                     )));
                 }
-                value.try_into().map_err(|_| {
-                    ParseError::InvalidSyntax(format!("{} value too large", label))
-                })
+                value
+                    .try_into()
+                    .map_err(|_| ParseError::InvalidSyntax(format!("{} value too large", label)))
             }
             _ => Err(ParseError::UnexpectedToken {
                 expected: format!("{} integer literal", label),

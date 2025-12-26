@@ -102,7 +102,10 @@ mod tests {
             "2025-01-02 03:04:05"
         );
         assert_eq!(
-            format!("{}", Value::Decimal(Decimal::parse("12.34").expect("valid decimal"))),
+            format!(
+                "{}",
+                Value::Decimal(Decimal::parse("12.34").expect("valid decimal"))
+            ),
             "12.34"
         );
         assert_eq!(format!("{}", Value::Null), "NULL");

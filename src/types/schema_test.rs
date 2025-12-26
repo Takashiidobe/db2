@@ -17,9 +17,9 @@ mod tests {
         assert!(!DataType::Boolean.matches(&Value::Integer(0)));
         assert!(DataType::String.matches(&Value::String("hello".to_string())));
         assert!(!DataType::String.matches(&Value::Integer(42)));
-        assert!(DataType::Date.matches(&Value::Date(
-            Date::parse("2025-01-02").expect("valid date"),
-        )));
+        assert!(
+            DataType::Date.matches(&Value::Date(Date::parse("2025-01-02").expect("valid date"),))
+        );
         assert!(DataType::Timestamp.matches(&Value::Timestamp(
             Timestamp::parse("2025-01-02 03:04:05").expect("valid ts"),
         )));

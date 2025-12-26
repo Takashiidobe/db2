@@ -10,10 +10,10 @@ use crate::optimizer::planner::{
     FromClausePlan, IndexMetadata, JoinPlan, JoinStrategy, Planner, ScanPlan,
 };
 use crate::serialization::{RowMetadata, RowSerializer};
-use crate::table::{HeapTable, RowId, TableScan};
 use crate::storage::PageError;
+use crate::table::{HeapTable, RowId, TableScan};
 use crate::types::{Column, DataType as DbDataType, Schema, Value};
-use crate::wal::{WalFile, WalRecord, TxnId};
+use crate::wal::{TxnId, WalFile, WalRecord};
 use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
@@ -502,10 +502,8 @@ impl Executor {
                         format!("Referenced table '{}' does not exist", fk.table),
                     )
                 })?;
-                let (_, ref_col) = referenced
-                    .schema()
-                    .find_column(&fk.column)
-                    .ok_or_else(|| {
+                let (_, ref_col) =
+                    referenced.schema().find_column(&fk.column).ok_or_else(|| {
                         io::Error::new(
                             io::ErrorKind::InvalidInput,
                             format!(
@@ -683,21 +681,15 @@ impl Executor {
                 let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
                 match page.update_row(row_id.slot_id(), &serialized) {
                     Ok(()) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), true);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), true);
                     }
                     Err(PageError::PageFull) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), false);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), false);
                         table.delete(row_id)?;
                         let _new_row_id = table.insert_with_metadata(&row, meta)?;
                     }
                     Err(err) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), false);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), false);
                         return Err(io::Error::from(err));
                     }
                 }
@@ -771,27 +763,20 @@ impl Executor {
             let schema = table.schema().clone();
             for (row_id, meta, mut row) in rows {
                 row.remove(drop_idx);
-                let serialized =
-                    RowSerializer::serialize_with_metadata(&row, Some(&schema), meta)
-                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let serialized = RowSerializer::serialize_with_metadata(&row, Some(&schema), meta)
+                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
                 match page.update_row(row_id.slot_id(), &serialized) {
                     Ok(()) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), true);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), true);
                     }
                     Err(PageError::PageFull) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), false);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), false);
                         table.delete(row_id)?;
                         let _new_row_id = table.insert_with_metadata(&row, meta)?;
                     }
                     Err(err) => {
-                        table
-                            .buffer_pool_mut()
-                            .unpin_page(row_id.page_id(), false);
+                        table.buffer_pool_mut().unpin_page(row_id.page_id(), false);
                         return Err(io::Error::from(err));
                     }
                 }
@@ -826,15 +811,12 @@ impl Executor {
                 )
             })?;
             let mut columns = table.schema().columns().to_vec();
-            let (idx, _) = table
-                .schema()
-                .find_column(&from)
-                .ok_or_else(|| {
-                    io::Error::new(
-                        io::ErrorKind::NotFound,
-                        format!("Column '{}' not found", from),
-                    )
-                })?;
+            let (idx, _) = table.schema().find_column(&from).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("Column '{}' not found", from),
+                )
+            })?;
             if table.schema().find_column(&to).is_some() {
                 return Err(io::Error::new(
                     io::ErrorKind::AlreadyExists,
@@ -1046,18 +1028,13 @@ impl Executor {
 
                 let (mut meta, values) = table.get_with_metadata(row_id)?;
                 meta.xmax = txn_id;
-                let serialized = RowSerializer::serialize_with_metadata(
-                    &values,
-                    Some(table.schema()),
-                    meta,
-                )
-                .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                let serialized =
+                    RowSerializer::serialize_with_metadata(&values, Some(table.schema()), meta)
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
                 let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
                 page.update_row(row_id.slot_id(), &serialized)
                     .map_err(io::Error::from)?;
-                table
-                    .buffer_pool_mut()
-                    .unpin_page(row_id.page_id(), true);
+                table.buffer_pool_mut().unpin_page(row_id.page_id(), true);
 
                 rows_deleted += 1;
                 wal_records.push(WalRecord::Delete {
@@ -1267,7 +1244,10 @@ impl Executor {
                 };
 
                 let (mut old_meta, old_values) = table.get_with_metadata(row_id)?;
-                let new_meta = RowMetadata { xmin: txn_id, xmax: 0 };
+                let new_meta = RowMetadata {
+                    xmin: txn_id,
+                    xmax: 0,
+                };
                 let _new_row_id = table.insert_with_metadata(&new_row, new_meta)?;
 
                 old_meta.xmax = txn_id;
@@ -1280,9 +1260,7 @@ impl Executor {
                 let page = table.buffer_pool_mut().fetch_page(row_id.page_id())?;
                 page.update_row(row_id.slot_id(), &serialized)
                     .map_err(io::Error::from)?;
-                table
-                    .buffer_pool_mut()
-                    .unpin_page(row_id.page_id(), true);
+                table.buffer_pool_mut().unpin_page(row_id.page_id(), true);
 
                 rows_updated += 1;
                 wal_records.push(WalRecord::Update {
@@ -1651,31 +1629,27 @@ impl Executor {
         let plan = planner.plan_select(&stmt);
 
         match plan.from {
-            FromClausePlan::Single { table, scan } => {
-                self.execute_select_single_table_plan(
-                    plan.columns,
-                    table,
-                    plan.filter,
-                    scan,
-                    &stmt.group_by,
-                    stmt.distinct,
-                    &stmt.order_by,
-                    stmt.limit,
-                    stmt.offset,
-                )
-            }
-            FromClausePlan::Join(join_plan) => {
-                self.execute_select_join_plan(
-                    plan.columns,
-                    join_plan,
-                    plan.filter,
-                    &stmt.group_by,
-                    stmt.distinct,
-                    &stmt.order_by,
-                    stmt.limit,
-                    stmt.offset,
-                )
-            }
+            FromClausePlan::Single { table, scan } => self.execute_select_single_table_plan(
+                plan.columns,
+                table,
+                plan.filter,
+                scan,
+                &stmt.group_by,
+                stmt.distinct,
+                &stmt.order_by,
+                stmt.limit,
+                stmt.offset,
+            ),
+            FromClausePlan::Join(join_plan) => self.execute_select_join_plan(
+                plan.columns,
+                join_plan,
+                plan.filter,
+                &stmt.group_by,
+                stmt.distinct,
+                &stmt.order_by,
+                stmt.limit,
+                stmt.offset,
+            ),
         }
     }
 
@@ -2116,13 +2090,8 @@ impl Executor {
             }
         }
 
-        let (column_names, mut result_rows, output_meta) = Self::apply_select_items(
-            result_rows,
-            combined_meta,
-            columns,
-            group_by,
-            true,
-        )?;
+        let (column_names, mut result_rows, output_meta) =
+            Self::apply_select_items(result_rows, combined_meta, columns, group_by, true)?;
         if distinct {
             Self::apply_distinct(&mut result_rows);
         }
@@ -2215,13 +2184,8 @@ impl Executor {
             }
         }
 
-        let (column_names, mut result_rows, output_meta) = Self::apply_select_items(
-            result_rows,
-            combined_meta,
-            columns,
-            group_by,
-            true,
-        )?;
+        let (column_names, mut result_rows, output_meta) =
+            Self::apply_select_items(result_rows, combined_meta, columns, group_by, true)?;
         if distinct {
             Self::apply_distinct(&mut result_rows);
         }
@@ -2261,12 +2225,8 @@ impl Executor {
         let mut scan = TableScan::new(table_ref);
         let mut rows = Vec::new();
         while let Some((_row_id, meta, row)) = scan.next_with_metadata()? {
-            if !Self::is_visible_for_snapshot(
-                &meta,
-                snapshot.as_ref(),
-                current_txn_id,
-                &txn_states,
-            ) {
+            if !Self::is_visible_for_snapshot(&meta, snapshot.as_ref(), current_txn_id, &txn_states)
+            {
                 continue;
             }
             if join_idx >= row.len() {
@@ -2446,9 +2406,9 @@ impl Executor {
             (DbDataType::Decimal, Value::Integer(i)) => {
                 Ok(Value::Decimal(crate::types::Decimal::from_i128(i as i128)))
             }
-            (DbDataType::Decimal, Value::Unsigned(u)) => Ok(Value::Decimal(
-                crate::types::Decimal::from_i128(u as i128),
-            )),
+            (DbDataType::Decimal, Value::Unsigned(u)) => {
+                Ok(Value::Decimal(crate::types::Decimal::from_i128(u as i128)))
+            }
             (DbDataType::Decimal, Value::Float(fv)) => crate::types::Decimal::from_f64(fv)
                 .map(Value::Decimal)
                 .ok_or_else(|| {
@@ -2938,11 +2898,7 @@ impl Executor {
         Ok(())
     }
 
-    fn ensure_no_fk_references_to_column(
-        &self,
-        table_name: &str,
-        column: &str,
-    ) -> io::Result<()> {
+    fn ensure_no_fk_references_to_column(&self, table_name: &str, column: &str) -> io::Result<()> {
         for (table, constraints) in &self.constraints {
             for fk in &constraints.foreign_keys {
                 if fk.ref_table == table_name && fk.ref_column == column {
@@ -3031,7 +2987,8 @@ impl Executor {
         }
 
         if !has_aggregate && group_by.is_empty() {
-            let (indices, column_names) = Self::build_projection(columns_meta, selection, use_qualified)?;
+            let (indices, column_names) =
+                Self::build_projection(columns_meta, selection, use_qualified)?;
             let output_rows = rows
                 .into_iter()
                 .map(|row| indices.iter().map(|&idx| row[idx].clone()).collect())
@@ -3177,9 +3134,9 @@ impl Executor {
         let mut groups: std::collections::BTreeMap<Vec<Value>, Vec<AggState>> =
             std::collections::BTreeMap::new();
         if group_by_indices.is_empty() && has_aggregate {
-            groups.entry(Vec::new()).or_insert_with(|| {
-                agg_specs.iter().map(AggState::new).collect::<Vec<_>>()
-            });
+            groups
+                .entry(Vec::new())
+                .or_insert_with(|| agg_specs.iter().map(AggState::new).collect::<Vec<_>>());
         }
 
         for row in rows {
@@ -3188,9 +3145,9 @@ impl Executor {
                 .map(|&idx| row[idx].clone())
                 .collect();
 
-            let states = groups.entry(key).or_insert_with(|| {
-                agg_specs.iter().map(AggState::new).collect::<Vec<_>>()
-            });
+            let states = groups
+                .entry(key)
+                .or_insert_with(|| agg_specs.iter().map(AggState::new).collect::<Vec<_>>());
 
             for (idx, spec) in agg_specs.iter().enumerate() {
                 let value_opt = if spec.count_all {
@@ -3319,9 +3276,10 @@ impl Executor {
             Value::Integer(i) => Ok(Some(*i as f64)),
             Value::Unsigned(u) => Ok(Some(*u as f64)),
             Value::Float(fv) => Ok(Some(*fv)),
-            Value::Decimal(d) => d.to_f64().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidInput, "Invalid decimal value")
-            }).map(Some),
+            Value::Decimal(d) => d
+                .to_f64()
+                .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "Invalid decimal value"))
+                .map(Some),
             _ => Err(io::Error::new(
                 io::ErrorKind::InvalidInput,
                 "Aggregate expects numeric values",
@@ -3737,8 +3695,12 @@ impl Executor {
                         let Some(column) = split.next() else { continue };
                         let Some(target) = split.next() else { continue };
                         let mut target_split = target.split('.');
-                        let Some(ref_table) = target_split.next() else { continue };
-                        let Some(ref_column) = target_split.next() else { continue };
+                        let Some(ref_table) = target_split.next() else {
+                            continue;
+                        };
+                        let Some(ref_column) = target_split.next() else {
+                            continue;
+                        };
                         if column.is_empty() || ref_table.is_empty() || ref_column.is_empty() {
                             continue;
                         }
@@ -3927,11 +3889,7 @@ impl Executor {
         }
     }
 
-    fn validate_batch_uniques(
-        &self,
-        table_name: &str,
-        rows: &[Vec<Value>],
-    ) -> io::Result<()> {
+    fn validate_batch_uniques(&self, table_name: &str, rows: &[Vec<Value>]) -> io::Result<()> {
         if rows.len() < 2 {
             return Ok(());
         }
@@ -4356,12 +4314,7 @@ impl Executor {
             let mut scan = TableScan::new(table);
             let mut dead_rows = Vec::new();
             while let Some((row_id, meta, _row)) = scan.next_with_metadata()? {
-                if !Self::is_visible_for_snapshot(
-                    &meta,
-                    None,
-                    None,
-                    &txn_states,
-                ) {
+                if !Self::is_visible_for_snapshot(&meta, None, None, &txn_states) {
                     dead_rows.push(row_id);
                 }
             }
@@ -4384,8 +4337,7 @@ impl Executor {
                 Ok(()) => removed += 1,
                 Err(err)
                     if err.kind() == io::ErrorKind::NotFound
-                        || err.kind() == io::ErrorKind::UnexpectedEof =>
-                {}
+                        || err.kind() == io::ErrorKind::UnexpectedEof => {}
                 Err(err) => return Err(err),
             }
         }
@@ -4502,9 +4454,7 @@ impl Executor {
 
         for record in self.txn_log.iter().rev() {
             match record {
-                WalRecord::Insert {
-                    table, row_id, ..
-                } => {
+                WalRecord::Insert { table, row_id, .. } => {
                     let Some(table_ref) = self.tables.get_mut(table) else {
                         continue;
                     };
@@ -4516,8 +4466,7 @@ impl Executor {
                         }
                         Err(err)
                             if err.kind() == io::ErrorKind::NotFound
-                                || err.kind() == io::ErrorKind::UnexpectedEof =>
-                        {}
+                                || err.kind() == io::ErrorKind::UnexpectedEof => {}
                         Err(err) => return Err(err),
                     }
                 }
@@ -4538,13 +4487,15 @@ impl Executor {
                         }
                         Err(err)
                             if err.kind() == io::ErrorKind::NotFound
-                                || err.kind() == io::ErrorKind::UnexpectedEof =>
-                        {}
+                                || err.kind() == io::ErrorKind::UnexpectedEof => {}
                         Err(err) => return Err(err),
                     }
                 }
                 WalRecord::Delete {
-                    table, row_id, values, ..
+                    table,
+                    row_id,
+                    values,
+                    ..
                 } => {
                     let Some(table_ref) = self.tables.get_mut(table) else {
                         continue;
@@ -4734,8 +4685,7 @@ impl Executor {
                         }
                         Err(err)
                             if err.kind() == io::ErrorKind::NotFound
-                                || err.kind() == io::ErrorKind::UnexpectedEof =>
-                        {}
+                                || err.kind() == io::ErrorKind::UnexpectedEof => {}
                         Err(err) => return Err(err),
                     }
                 }
@@ -4750,8 +4700,7 @@ impl Executor {
                         }
                         Err(err)
                             if err.kind() == io::ErrorKind::NotFound
-                                || err.kind() == io::ErrorKind::UnexpectedEof =>
-                        {}
+                                || err.kind() == io::ErrorKind::UnexpectedEof => {}
                         Err(err) => return Err(err),
                     }
                 }

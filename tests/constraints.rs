@@ -7,7 +7,9 @@ fn test_primary_key_and_unique_constraints() {
     let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
 
     executor
-        .execute(parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE)").unwrap())
+        .execute(
+            parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, name VARCHAR UNIQUE)").unwrap(),
+        )
         .unwrap();
     executor
         .execute(parse_sql("INSERT INTO users VALUES (1, 'Alice')").unwrap())
@@ -34,8 +36,10 @@ fn test_foreign_key_constraints() {
         .unwrap();
     executor
         .execute(
-            parse_sql("CREATE TABLE users (id INTEGER PRIMARY KEY, org_id INTEGER REFERENCES orgs(id))")
-                .unwrap(),
+            parse_sql(
+                "CREATE TABLE users (id INTEGER PRIMARY KEY, org_id INTEGER REFERENCES orgs(id))",
+            )
+            .unwrap(),
         )
         .unwrap();
 

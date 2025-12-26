@@ -1,7 +1,7 @@
 mod tests {
     use crate::table::RowId;
     use crate::types::Value;
-    use crate::wal::{WalRecord, WalRecord::*, TxnId};
+    use crate::wal::{TxnId, WalRecord, WalRecord::*};
 
     fn roundtrip(record: WalRecord) -> WalRecord {
         let bytes = record.serialize().unwrap();

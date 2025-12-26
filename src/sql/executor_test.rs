@@ -1,7 +1,9 @@
 mod tests {
     use crate::{
         serialization::RowMetadata,
-        sql::{ExecutionResult, Executor, IndexType, TransactionCommand, TxnState, parser::parse_sql},
+        sql::{
+            ExecutionResult, Executor, IndexType, TransactionCommand, TxnState, parser::parse_sql,
+        },
         table::RowId,
         types::Value,
     };
@@ -1028,10 +1030,7 @@ mod tests {
         executor.execute(parse_sql("BEGIN").unwrap()).unwrap();
         let txn_id = executor.current_txn_id().expect("txn id");
         executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap();
-        assert_eq!(
-            executor.transaction_state(txn_id),
-            Some(TxnState::Aborted)
-        );
+        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Aborted));
     }
 
     #[test]
@@ -1046,7 +1045,10 @@ mod tests {
         };
 
         let executor = Executor::new(temp_dir.path(), 10).unwrap();
-        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Committed));
+        assert_eq!(
+            executor.transaction_state(txn_id),
+            Some(TxnState::Committed)
+        );
     }
 
     #[test]
@@ -1063,10 +1065,7 @@ mod tests {
         let table = executor.get_table("users").expect("table");
         table
             .insert_with_metadata(
-                &[
-                    Value::Integer(1),
-                    Value::String("Invisible".to_string()),
-                ],
+                &[Value::Integer(1), Value::String("Invisible".to_string())],
                 RowMetadata {
                     xmin: snapshot.xmax,
                     xmax: 0,
@@ -1272,10 +1271,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("Write conflict"));
         assert!(!executor.in_transaction());
-        assert_eq!(
-            executor.transaction_state(txn_id),
-            Some(TxnState::Aborted)
-        );
+        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Aborted));
     }
 
     #[test]
@@ -1308,10 +1304,7 @@ mod tests {
             .unwrap_err();
         assert!(err.to_string().contains("Write conflict"));
         assert!(!executor.in_transaction());
-        assert_eq!(
-            executor.transaction_state(txn_id),
-            Some(TxnState::Aborted)
-        );
+        assert_eq!(executor.transaction_state(txn_id), Some(TxnState::Aborted));
     }
 
     #[test]
@@ -1369,7 +1362,9 @@ mod tests {
         let removed = executor.vacuum_table("users").unwrap();
         assert_eq!(removed, 2);
 
-        let result = executor.execute(parse_sql("SELECT * FROM users").unwrap()).unwrap();
+        let result = executor
+            .execute(parse_sql("SELECT * FROM users").unwrap())
+            .unwrap();
         match result {
             ExecutionResult::Select { rows, .. } => {
                 assert_eq!(rows.len(), 1);
@@ -1417,7 +1412,9 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut executor = Executor::new(temp_dir.path(), 10).unwrap();
 
-        let err = executor.execute(parse_sql("ROLLBACK").unwrap()).unwrap_err();
+        let err = executor
+            .execute(parse_sql("ROLLBACK").unwrap())
+            .unwrap_err();
         assert!(err.to_string().contains("No active transaction"));
     }
 }

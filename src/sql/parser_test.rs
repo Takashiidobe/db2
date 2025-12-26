@@ -3,9 +3,9 @@ mod tests {
         BinaryOp, ColumnRef, Expr, ForeignKeyRef, FromClause, IndexType, Literal, SelectColumn,
         SelectItem,
     };
-    use crate::sql::{parse_sql, parse_sql_statements};
     use crate::sql::parser::{Token, Tokenizer};
     use crate::sql::{DataType, Statement, TransactionCommand};
+    use crate::sql::{parse_sql, parse_sql_statements};
 
     #[test]
     fn test_tokenize_create_table() {
@@ -248,10 +248,7 @@ mod tests {
         match stmt {
             Statement::Select(select) => {
                 assert_eq!(select.order_by.len(), 2);
-                assert_eq!(
-                    select.order_by[0].column,
-                    ColumnRef::new(None, "name")
-                );
+                assert_eq!(select.order_by[0].column, ColumnRef::new(None, "name"));
                 assert!(!select.order_by[0].ascending);
                 assert_eq!(select.order_by[1].column, ColumnRef::new(None, "id"));
                 assert!(select.order_by[1].ascending);
@@ -556,8 +553,8 @@ mod tests {
 
     #[test]
     fn test_parse_multiple_statements() {
-        let stmts = parse_sql_statements("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);")
-            .unwrap();
+        let stmts =
+            parse_sql_statements("CREATE TABLE t (id INTEGER); INSERT INTO t VALUES (1);").unwrap();
         assert_eq!(stmts.len(), 2);
         assert!(matches!(stmts[0], Statement::CreateTable(_)));
         assert!(matches!(stmts[1], Statement::Insert(_)));

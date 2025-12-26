@@ -1,21 +1,19 @@
-use db2::sql::{parse_sql, ExecutionResult, Executor};
+use db2::sql::{ExecutionResult, Executor, parse_sql};
 use db2::types::Value;
 use std::io;
 use tempfile::TempDir;
 
 fn execute_ok(executor: &mut Executor, sql: &str) -> ExecutionResult {
-    let stmt = parse_sql(sql).unwrap_or_else(|e| {
-        panic!("Expected SQL to parse but got error: {}\nSQL: {}", e, sql)
-    });
-    executor.execute(stmt).unwrap_or_else(|e| {
-        panic!("Expected SQL to succeed but got error: {}\nSQL: {}", e, sql)
-    })
+    let stmt = parse_sql(sql)
+        .unwrap_or_else(|e| panic!("Expected SQL to parse but got error: {}\nSQL: {}", e, sql));
+    executor
+        .execute(stmt)
+        .unwrap_or_else(|e| panic!("Expected SQL to succeed but got error: {}\nSQL: {}", e, sql))
 }
 
 fn execute_err(executor: &mut Executor, sql: &str) -> io::Error {
-    let stmt = parse_sql(sql).unwrap_or_else(|e| {
-        panic!("Expected SQL to parse but got error: {}\nSQL: {}", e, sql)
-    });
+    let stmt = parse_sql(sql)
+        .unwrap_or_else(|e| panic!("Expected SQL to parse but got error: {}\nSQL: {}", e, sql));
     executor.execute(stmt).expect_err(&format!(
         "Expected SQL to fail but it succeeded\nSQL: {}",
         sql
@@ -45,8 +43,22 @@ fn test_schema_add_column_persists_after_reopen() {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 2);
-            assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string()), Value::Null]);
-            assert_eq!(rows[1], vec![Value::Integer(2), Value::String("Bob".to_string()), Value::Integer(30)]);
+            assert_eq!(
+                rows[0],
+                vec![
+                    Value::Integer(1),
+                    Value::String("Alice".to_string()),
+                    Value::Null
+                ]
+            );
+            assert_eq!(
+                rows[1],
+                vec![
+                    Value::Integer(2),
+                    Value::String("Bob".to_string()),
+                    Value::Integer(30)
+                ]
+            );
         }
         other => panic!("Expected Select result, got: {:?}", other),
     }
@@ -71,7 +83,10 @@ fn test_schema_drop_column_persists_after_reopen() {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string())]);
+            assert_eq!(
+                rows[0],
+                vec![Value::Integer(1), Value::String("Alice".to_string())]
+            );
         }
         other => panic!("Expected Select result, got: {:?}", other),
     }
@@ -102,7 +117,10 @@ fn test_schema_rename_column_persists_after_reopen() {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string())]);
+            assert_eq!(
+                rows[0],
+                vec![Value::Integer(1), Value::String("Alice".to_string())]
+            );
         }
         other => panic!("Expected Select result, got: {:?}", other),
     }
@@ -130,7 +148,10 @@ fn test_schema_rename_table_persists_after_reopen() {
     match result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
-            assert_eq!(rows[0], vec![Value::Integer(1), Value::String("Alice".to_string())]);
+            assert_eq!(
+                rows[0],
+                vec![Value::Integer(1), Value::String("Alice".to_string())]
+            );
         }
         other => panic!("Expected Select result, got: {:?}", other),
     }

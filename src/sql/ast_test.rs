@@ -45,12 +45,18 @@ mod tests {
             format!("{}", Literal::String("hello".to_string())),
             "'hello'"
         );
-        assert_eq!(format!("{}", Literal::Date("2025-01-02".to_string())), "DATE '2025-01-02'");
+        assert_eq!(
+            format!("{}", Literal::Date("2025-01-02".to_string())),
+            "DATE '2025-01-02'"
+        );
         assert_eq!(
             format!("{}", Literal::Timestamp("2025-01-02 03:04:05".to_string())),
             "TIMESTAMP '2025-01-02 03:04:05'"
         );
-        assert_eq!(format!("{}", Literal::Decimal("12.34".to_string())), "DECIMAL '12.34'");
+        assert_eq!(
+            format!("{}", Literal::Decimal("12.34".to_string())),
+            "DECIMAL '12.34'"
+        );
         assert_eq!(format!("{}", Literal::Null), "NULL");
     }
 

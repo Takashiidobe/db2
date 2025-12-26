@@ -214,11 +214,20 @@ impl Decimal {
         if self.scale == target_scale {
             self.value
         } else {
-            let factor = pow10_i128(target_scale.saturating_sub(self.scale))
-                .unwrap_or_else(|| if self.value.is_negative() { i128::MIN } else { i128::MAX });
-            self.value
-                .checked_mul(factor)
-                .unwrap_or_else(|| if self.value.is_negative() { i128::MIN } else { i128::MAX })
+            let factor = pow10_i128(target_scale.saturating_sub(self.scale)).unwrap_or_else(|| {
+                if self.value.is_negative() {
+                    i128::MIN
+                } else {
+                    i128::MAX
+                }
+            });
+            self.value.checked_mul(factor).unwrap_or_else(|| {
+                if self.value.is_negative() {
+                    i128::MIN
+                } else {
+                    i128::MAX
+                }
+            })
         }
     }
 
@@ -476,34 +485,18 @@ impl Ord for Value {
             (Value::Date(a), Value::Date(b)) => a.key().cmp(&b.key()),
             (Value::Timestamp(a), Value::Timestamp(b)) => a.key().cmp(&b.key()),
             (Value::Decimal(a), Value::Decimal(b)) => a.cmp_scaled(b),
-            (Value::Decimal(a), Value::Integer(b)) => {
-                a.cmp_scaled(&Decimal::from_i128(*b as i128))
-            }
-            (Value::Integer(a), Value::Decimal(b)) => {
-                Decimal::from_i128(*a as i128).cmp_scaled(b)
-            }
+            (Value::Decimal(a), Value::Integer(b)) => a.cmp_scaled(&Decimal::from_i128(*b as i128)),
+            (Value::Integer(a), Value::Decimal(b)) => Decimal::from_i128(*a as i128).cmp_scaled(b),
             (Value::Decimal(a), Value::Unsigned(b)) => {
                 a.cmp_scaled(&Decimal::from_i128(*b as i128))
             }
-            (Value::Unsigned(a), Value::Decimal(b)) => {
-                Decimal::from_i128(*a as i128).cmp_scaled(b)
-            }
-            (Value::Decimal(a), Value::Float(b)) => {
-                Decimal::from_f64(*b)
-                    .map(|dec| a.cmp_scaled(&dec))
-                    .unwrap_or_else(|| {
-                        a.to_f64()
-                            .unwrap_or(0.0)
-                            .total_cmp(b)
-                    })
-            }
-            (Value::Float(a), Value::Decimal(b)) => {
-                Decimal::from_f64(*a)
-                    .map(|dec| dec.cmp_scaled(b))
-                    .unwrap_or_else(|| {
-                        a.total_cmp(&b.to_f64().unwrap_or(0.0))
-                    })
-            }
+            (Value::Unsigned(a), Value::Decimal(b)) => Decimal::from_i128(*a as i128).cmp_scaled(b),
+            (Value::Decimal(a), Value::Float(b)) => Decimal::from_f64(*b)
+                .map(|dec| a.cmp_scaled(&dec))
+                .unwrap_or_else(|| a.to_f64().unwrap_or(0.0).total_cmp(b)),
+            (Value::Float(a), Value::Decimal(b)) => Decimal::from_f64(*a)
+                .map(|dec| dec.cmp_scaled(b))
+                .unwrap_or_else(|| a.total_cmp(&b.to_f64().unwrap_or(0.0))),
             _ => match (self.kind(), other.kind()) {
                 (ValueKind::Numeric, ValueKind::Date) => Ordering::Less,
                 (ValueKind::Numeric, ValueKind::Timestamp) => Ordering::Less,

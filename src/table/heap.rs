@@ -186,7 +186,9 @@ impl HeapTable {
         if metadata_page.get_row(1).is_some() {
             metadata_page.delete_row(1).map_err(io::Error::from)?;
         }
-        metadata_page.add_row(&schema_data).map_err(io::Error::from)?;
+        metadata_page
+            .add_row(&schema_data)
+            .map_err(io::Error::from)?;
         self.buffer_pool.unpin_page(0, true);
         self.buffer_pool.flush_page(0)?;
         Ok(())

@@ -15,9 +15,8 @@ fn test_query_features_combined() {
     );
     db.execute_ok("INSERT INTO orders VALUES (1, 10), (1, 5), (3, 7), (2, 1)");
 
-    let result = db.execute_ok(
-        "SELECT region, COUNT(*) FROM users GROUP BY region ORDER BY region ASC",
-    );
+    let result =
+        db.execute_ok("SELECT region, COUNT(*) FROM users GROUP BY region ORDER BY region ASC");
     match &result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 2);
@@ -29,9 +28,8 @@ fn test_query_features_combined() {
         other => panic!("Expected Select result, got: {:?}", other),
     }
 
-    let result = db.execute_ok(
-        "SELECT DISTINCT region FROM users ORDER BY region DESC LIMIT 1 OFFSET 0",
-    );
+    let result =
+        db.execute_ok("SELECT DISTINCT region FROM users ORDER BY region DESC LIMIT 1 OFFSET 0");
     match &result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);
@@ -61,7 +59,8 @@ fn test_query_features_aggregates() {
     db.execute_ok("CREATE TABLE numbers (val INTEGER)");
     db.execute_ok("INSERT INTO numbers VALUES (1), (2), (3), (4)");
 
-    let result = db.execute_ok("SELECT COUNT(*), SUM(val), AVG(val), MIN(val), MAX(val) FROM numbers");
+    let result =
+        db.execute_ok("SELECT COUNT(*), SUM(val), AVG(val), MIN(val), MAX(val) FROM numbers");
     match &result {
         ExecutionResult::Select { rows, .. } => {
             assert_eq!(rows.len(), 1);

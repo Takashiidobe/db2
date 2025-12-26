@@ -82,7 +82,7 @@ impl<'a> TableScan<'a> {
                 // Deserialize the row
                 let (metadata, values) =
                     RowSerializer::deserialize_with_metadata(&row_data, self.table.schema())
-                    .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
+                        .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e))?;
 
                 // Move to next slot
                 self.current_slot_id += 1;

@@ -9,9 +9,15 @@ pub type TxnId = u64;
 /// WAL record types for transactional logging.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum WalRecord {
-    Begin { txn_id: TxnId },
-    Commit { txn_id: TxnId },
-    Rollback { txn_id: TxnId },
+    Begin {
+        txn_id: TxnId,
+    },
+    Commit {
+        txn_id: TxnId,
+    },
+    Rollback {
+        txn_id: TxnId,
+    },
     Insert {
         txn_id: TxnId,
         table: String,
