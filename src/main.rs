@@ -15,6 +15,7 @@ fn main() -> io::Result<()> {
     println!("  UPDATE <table> SET <col> = <expr>[, ...] [WHERE <pred>]");
     println!("  DELETE FROM <name> [WHERE <pred>]");
     println!("  SELECT <cols|*> FROM <table> [WHERE <pred>] [JOIN ...]");
+    println!("  .commit - Commit data to disk");
     println!("  .vacuum [table|all] - Vacuum dead row versions");
     println!("  .exit - Exit the program");
     println!();
@@ -62,6 +63,14 @@ fn main() -> io::Result<()> {
         let input = input.trim();
 
         if input.is_empty() {
+            continue;
+        }
+
+        if input == ".commit" {
+            println!("Flushing data and commiting...");
+            if let Err(e) = executor.flush_all() {
+                eprintln!("Error while flushing: {}", e);
+            }
             continue;
         }
 
